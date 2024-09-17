@@ -12,7 +12,7 @@
 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/cmip6-gpt.git
+git clone https://github.com/CliDyn/cmip6_gpt
 cd cmip6-gpt
 ```
 2. Create a virtual environment and install the required packages:
