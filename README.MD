@@ -13,7 +13,7 @@
 
 ```bash
 git clone https://github.com/CliDyn/cmip6_gpt
-cd cmip6-gpt
+cd cmip6_gpt
 ```
 2. Create a virtual environment and install the required packages:
 ```bash
