@@ -24,7 +24,7 @@ pip install -r requirements.txt
 [openai]
 api_key = "your-openai-api-key"
 
-[langchain]
+[LANGCHAIN]
 # Add any LangChain-specific configurations here if necessary
 LANGCHAIN_TRACING_V2 = 'true'
 LANGCHAIN_ENDPOINT = 'https://api.smith.langchain.com'
