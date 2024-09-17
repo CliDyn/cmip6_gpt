@@ -9,16 +9,22 @@
 
 
 ### Setup
-1. Create a virtual environment and install the required packages:
+1. Clone the Repository
+
+```bash
+git clone https://github.com/your-username/cmip6-gpt.git
+cd cmip6-gpt
+```
+2. Create a virtual environment and install the required packages:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
-2. Install Dependencies
+3. Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
-3. Configure API Keys. Create a .streamlit/secrets.toml file in the project root directory with the following content:
+4. Configure API Keys. Create a .streamlit/secrets.toml file in the project root directory with the following content:
 ```toml
 # .streamlit/secrets.toml
 [openai]
