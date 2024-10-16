@@ -19,6 +19,6 @@ class Config:
     @classmethod
     def get_retrievers_dir(cls) -> str:
         # Get the absolute path to the project root
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         retrievers_dir = os.path.join(project_root, 'retrievers')
         return retrievers_dir
