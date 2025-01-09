@@ -20,7 +20,7 @@ def run_app():
     # Sidebar for model selection
     with st.sidebar:
         st.title("Configuration")
-        model_name = st.selectbox("Select Model", ["gpt-4o","gpt-4o-mini", "gpt-3.5-turbo"], key="model_name")
+        model_name = st.selectbox("Select Model", ["gpt-4o","gpt-4o-mini", "gpt-3.5-turbo", "o1-preview"], key="model_name")
         if st.button("Clear Chat History"):
             st.session_state.messages = []
             # st.experimental_rerun()

@@ -6,7 +6,6 @@ from src.services.llm_service import create_llm
 import urllib
 import json
 
-
 def download_cmip6_data(**kwargs):
     """
     Downloads CMIP6 climate data based on the specified search parameters.
@@ -25,10 +24,10 @@ def download_cmip6_data(**kwargs):
     print(f"Search parameters: {kwargs}")
     try:
         #conn = SearchConnection('https://esgf-data.dkrz.de/esg-search', distrib=True)
-        conn = SearchConnection('https://esgf-data.dkrz.de/esg-search', distrib=True)
+        conn = SearchConnection('https://esgf-node.llnl.gov/esg-search', distrib=True)
         facets = [
             'source_id', 'frequency', 'nominal_resolution', 'experiment_id',
-            'variable_id', 'sub_experiment_id', 'activity_id', 'realm'
+            'variable_id', 'sub_experiment_id', 'activity_id', 'realm', 'institution_id'
         ]
         ctx = conn.new_context(
             project='CMIP6',
@@ -46,9 +45,9 @@ def download_cmip6_data(**kwargs):
         print(json.dumps(result, indent=2))
         summary = json.dumps(result, indent=2)
         print("--- END DOWNLOADING CMIP6 DATA ---\n")
-        return summary
+        return summary, result['hit_count']
     except Exception as e:
-        error_msg = f"Error in CMIP6 data search: {str(e)}"
+        error_msg = f"Error in CMIP6 data downloading: {str(e)}"
         print(error_msg)
         print("--- END DOWNLOADING CMIP6 DATA (WITH ERROR) ---\n")
         return error_msg
@@ -114,17 +113,19 @@ def select_facets(query: str) -> Dict[str, Any]:
     """
     print(f"\n--- SELECTING FACETS FOR QUERY: {query} ---")
     chat_history = st.session_state.get('messages', [])
-    formatted_history = format_chat_history(chat_history)
+    # formatted_history = format_chat_history(chat_history)
     llm = create_llm(temperature=0)
     prompt = f"""
     Based on the following user query about CMIP6 data, determine which facets are relevant for the search.
+    User query: {query}
     The possible facets are:
-    - source_id: The model name in CMIP6 (e.g., CMCC-CM2-SR5, MPI-ESM1-2-LR)
+    - source_id: The model name in CMIP6 (e.g., CMCC-CM2-SR5, MPI-ESM1-2-LR) *Always* use naming from vector search only
     - frequency: Time frequency of the data (e.g., daily, monthly, yearly)
     - nominal_resolution: Spatial resolution of the data (e.g., 100 km, 250 km)
-    - experiment_id: Experiment identifier (e.g., historical, ssp585)
-    - variable_id: Variable identifier (e.g., tas for surface air temperature, pr for precipitation)
-    - activity_id: Activity identifier for the CMIP6 project (e.g., CMIP, ScenarioMIP)
+    - experiment_id: Experiment identifier (e.g., historical, ssp585). *Always* use naming from vector search only
+    - variable_id: Variable identifier (e.g., tas for surface air temperature, pr for precipitation). *Always* use naming from vector search only
+    - activity_id: Activity identifier for the CMIP6 project (e.g., CMIP, ScenarioMIP).
+    - institution_id: Institution identifier for the CMIP6 project (e.g, AWI, UHH)
     - realm: Realm of the climate system (e.g., atmos, ocean, land)
     - sub_experiment_id: Sub-experiment identifier for specific initializations
     - variant_label: Identifier for the ensemble member specifying realization, initialization method, physics, and forcing indices (e.g., r1i1p1f1). The default value is r1i1p1f1.
@@ -133,11 +134,12 @@ def select_facets(query: str) -> Dict[str, Any]:
     1. **Vector Search Priority:** If `source_id`, `experiment_id`, or `variable_id` are relevant to the query, they should **always** be retrieved using vector search **before** considering other facets.
     2. **Facet Relevance:** Only include facets that are directly relevant to the user's query.
     3. **Comprehensive Analysis:** Consider the entire conversation history to accurately determine the user's intent and the relevance of each facet.
-        
-    Conversation:{formatted_history}
-
-    User query: {query}
-
+    4. When users mention some general concepts like 'ocean data', 'sea ice data', 'atmosphere data' and ect, you can consider 'realm' facet.
+    5. omplex Queries:
+      - Avoid breaking down complicated user requests into multiple separate facets.
+      - Instead, identify one primary facet that best represents the user’s main requirement.
+      - For example, rather than using 'nominal_resolution' and 'institution_id' independently, combine them into a single facet like 'source_id' if it more directly aligns with the user’s needs.
+    **ALWAYS FOLLOW THE INSTRUCTIONS**
     Return your response as a JSON object with the following structure:
     {{
         "relevant_facets": [list of relevant facet names],
@@ -191,6 +193,7 @@ def select_facet_values(query: str, relevant_facets: List[str], dynamic_args_cla
     Based on the following user query about CMIP6 data and the relevant facets, determine appropriate values for each facet.
     Use the provided information about each facet to guide your selection.
     Strictly select only what the user wants; if you think that multiple values could fit the user's prompt, return them all in a list format.
+    If a higher-priority facet already contains all necessary information (e.g., includes institution or resolution details), do not include additional, lower-priority facets that overlap or become redundant.
     Conversation: {formatted_history}
     User query: {query}
 

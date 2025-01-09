@@ -148,7 +148,7 @@ def perform_vector_search(query: str, vector_search_fields: List[str]) -> Dict[s
         dict: A dictionary containing vector search results, split queries, and dynamically created CMIP6 arguments.
     """
     RETRIEVERS_DIR = Config.get_retrievers_dir()
-
+    print(RETRIEVERS_DIR)
     variable_retriever = load_retriever(
         os.path.join(RETRIEVERS_DIR, 'chroma_langchain_db'))
     sources_retriever = load_retriever(
@@ -228,6 +228,7 @@ def perform_vector_search(query: str, vector_search_fields: List[str]) -> Dict[s
 
     return {
         "vector_search_results": vector_search_results,
+        "vector_serach_full_results": schema,
         "split_queries": split_queries,
         "cmip6_args": DynamicCMIP6DownloadArgs
     }
