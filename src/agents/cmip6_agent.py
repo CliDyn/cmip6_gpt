@@ -88,8 +88,11 @@ def create_cmip6_adviser_tool():
     func=perform_vector_search,
     name="cmip6_adviser",
     description=(
-        "Use this tool to answer user questions regarding variables, source_id (models), or experiments. "
+        "Use this tool to answer user questions regarding ONLY variables, source_id (models), or experiments. "
         "Always add to the query what the user is looking for. For example, if the question is 'tos', you need to write in the query 'variable tos'."
+    "Arguments must be a dictionary containing: \n"
+	"•	query (string): The user’s request"
+	"•	vector_search_fields (list): [list of fields requiring vector search]:  source_id, variable_id, or experiment_id \n"
     ),
     args_schema=CMIP6AdviseArgsSchema)
     return cmip6_adviser_tool
