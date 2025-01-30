@@ -135,10 +135,11 @@ def select_facets(query: str) -> Dict[str, Any]:
     2. **Facet Relevance:** Only include facets that are directly relevant to the user's query.
     3. **Comprehensive Analysis:** Consider the entire conversation history to accurately determine the user's intent and the relevance of each facet.
     4. When users mention some general concepts like 'ocean data', 'sea ice data', 'atmosphere data' and ect, you can consider 'realm' facet.
-    5. omplex Queries:
+    5. Complex Queries:
       - Avoid breaking down complicated user requests into multiple separate facets.
       - Instead, identify one primary facet that best represents the user’s main requirement.
       - For example, rather than using 'nominal_resolution' and 'institution_id' independently, combine them into a single facet like 'source_id' if it more directly aligns with the user’s needs.
+      - If a user asks for general data (e.g., “sea ice data,” “ocean data,” “atmospheric data”), use the 'realm' facet rather than searching for a specific 'variable_id'.
     **ALWAYS FOLLOW THE INSTRUCTIONS**
     Return your response as a JSON object with the following structure:
     {{
@@ -213,7 +214,7 @@ def select_facet_values(query: str, relevant_facets: List[str], dynamic_args_cla
             json_str = json_str[start:end]
 
         facet_values = json.loads(json_str)
-        display_debug_info("Parsed Facet Values", facet_values)
+        display_debug_info("Initial Facet Values", facet_values)
     except json.JSONDecodeError as e:
         st.error(f"Error parsing JSON for facet values: {str(e)}")
         st.error(f"Raw content: {response.content}")

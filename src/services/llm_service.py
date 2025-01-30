@@ -57,8 +57,6 @@ def create_prompt_template():
             "   - Use this to check data availability with given facet_values\n"
             "   - Always examine the total_datasets count in the response\n"
             "   - This tool can be used when the user wants to know what is available for a specific facet."
-
-
             "3. cmip6_adviser\n"
             "   - Use ONLY for understanding variables (variable_id), models (source_id), or experiments (experiment_id)\n"
             "   - Helpful when evaluating alternative options\n\n"
@@ -74,7 +72,7 @@ def create_prompt_template():
             "   - Remove less crucial facets if needed\n"
             
             "3. FINAL OUTPUT FORMAT:\n"
-            "     \"final_facet_values\": {...},\n"
+            # " \"final_facet_values\": {...},\n" 
             " datasets: List of available datasets\n"
             " Explanation: Justify why these datasets are most relevant\n\n"
 
@@ -88,6 +86,7 @@ def create_prompt_template():
             "- When users mention some general concepts like 'ocean data', 'sea ice data', 'atmosphere data' and ect, you can consider 'realm' facet."
             "- DO NOT provide results if you have no datasets, always try to find solution"
             "- ALWAYS follow the protocol for consistent results"
+            # "- for FINAL OUTPUT add JSON obcejct ONLY for final_facet_values. DATASETS and EXPLANATION must be written in regular format"
 
             "In situations where no datasets are found for a given set of facet_values:\n"
 

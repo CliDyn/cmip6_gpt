@@ -162,7 +162,7 @@ def create_dynamic_cmip6_args(relevant_facets: List[str], vector_search_results:
             top_10 = []
             descriptions = []
             print(f"Vector search results for {facet}:")
-            for result in vector_search_results[facet][:10]:
+            for result in vector_search_results[facet]:
                 print(f"  Raw result: {result}")
                 content = result['content']
                 source = result['metadata']['source']
