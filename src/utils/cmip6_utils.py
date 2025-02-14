@@ -9,48 +9,119 @@ import json
 def download_cmip6_data(**kwargs):
     """
     Downloads CMIP6 climate data based on the specified search parameters.
-
-    This function connects to the ESGF (Earth System Grid Federation) search service, retrieves CMIP6 
-    datasets based on the provided facets, and returns a summary of the search results, including the 
-    hit count and facet breakdown.
-
+    This function connects to the ESGF search service and returns both the original facet counts
+    and an additional detailed model-specific breakdown, excluding empty or "none" parameters.
+    
     Args:
-        **kwargs: Search parameters used to filter CMIP6 datasets (e.g., source_id, variable_id, etc.).
-
+        **kwargs: Search parameters used to filter CMIP6 datasets.
+    
     Returns:
-        str: A JSON-formatted string containing the search results or an error message if the download fails.
+        tuple: (str, int) - JSON-formatted string of organized results and hit count
     """
     print("\n--- DOWNLOADING CMIP6 DATA ---")
     print(f"Search parameters: {kwargs}")
+    
     try:
-        #conn = SearchConnection('https://esgf-data.dkrz.de/esg-search', distrib=True)
         conn = SearchConnection('https://esgf-node.llnl.gov/esg-search', distrib=True)
         facets = [
             'source_id', 'frequency', 'nominal_resolution', 'experiment_id',
             'variable_id', 'sub_experiment_id', 'activity_id', 'realm', 'institution_id'
         ]
+        
         ctx = conn.new_context(
             project='CMIP6',
             facets=','.join(facets),
             **kwargs
         )
+        
+        # Original result structure
         result = {
             "hit_count": ctx.hit_count,
             "facet_counts": {}
         }
+        
+        # Store original facet counts
         for facet in facets:
             result["facet_counts"][facet] = ctx.facet_counts.get(facet, {})
-        print(f"Number of datasets found: {result['hit_count']}")
-        print("Facet counts:")
-        print(json.dumps(result, indent=2))
+            
+        # Create detailed model-specific analysis
+        final_facet_values = {
+            "hit_count": ctx.hit_count,
+            "models": {}
+        }
+        
+        # Process each dataset for model-specific information
+        datasets = ctx.search()
+        param_counts = {}
+        
+        for dataset in datasets:
+            source_id = dataset.json.get('source_id')[0]
+            
+            if source_id not in final_facet_values["models"]:
+                final_facet_values["models"][source_id] = {
+                    "dataset_count": 0
+                }
+                param_counts[source_id] = {}
+            
+            final_facet_values["models"][source_id]["dataset_count"] += 1
+            
+            for facet in facets[1:]:  # Skip source_id
+                if facet in dataset.json and dataset.json[facet]:
+                    values = dataset.json[facet]
+                    # Skip if the only value is "none"
+                    if values == ["none"]:
+                        continue
+                        
+                    if facet not in final_facet_values["models"][source_id]:
+                        final_facet_values["models"][source_id][facet] = {}
+                    
+                    if facet not in param_counts[source_id]:
+                        param_counts[source_id][facet] = {}
+                    
+                    for value in values:
+                        # Skip empty values or "none"
+                        if not value or value.lower() == "none":
+                            continue
+                            
+                        if value not in param_counts[source_id][facet]:
+                            param_counts[source_id][facet][value] = 0
+                        param_counts[source_id][facet][value] += 1
+        
+        # Convert counts to final format, excluding empty facets
+        for model_id, model_data in final_facet_values["models"].items():
+            for facet in facets[1:]:
+                if facet in param_counts[model_id]:
+                    if param_counts[model_id][facet]:  # Only include if there are non-empty values
+                        model_data[facet] = {
+                            value: count 
+                            for value, count in param_counts[model_id][facet].items()
+                            if count > 0
+                        }
+                        # Remove the facet if it ended up empty after filtering
+                        if not model_data[facet]:
+                            del model_data[facet]
+        
+        # Original summary display
+        # print(f"Number of datasets found: {result['hit_count']}")
+        # print("Facet counts:")
         summary = json.dumps(result, indent=2)
+        # print(summary)
+        # display_debug_info("Facet Counts", summary)
+        
+        # Display detailed model-specific summary
+        print("\nDetailed model-specific breakdown:")
+        detailed_summary = json.dumps(final_facet_values, indent=2)
+        print(detailed_summary)
+        # display_debug_info("Final Facet Values", detailed_summary)
+        
         print("--- END DOWNLOADING CMIP6 DATA ---\n")
-        return summary, result['hit_count']
+        
+        return summary, result['hit_count'], detailed_summary
+        
     except Exception as e:
-        error_msg = f"Error in CMIP6 data downloading: {str(e)}"
+        error_msg = f"Error downloading CMIP6 data: {str(e)}"
         print(error_msg)
-        print("--- END DOWNLOADING CMIP6 DATA (WITH ERROR) ---\n")
-        return error_msg
+        return json.dumps({"error": error_msg}), 0
 def create_esgf_search_link(facet_values):
     """
     Creates a consistent ESGF search URL by encapsulating all facets within the activeFacets parameter.

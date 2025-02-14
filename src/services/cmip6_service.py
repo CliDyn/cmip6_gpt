@@ -53,7 +53,7 @@ def cmip6_data_process(query, facet_values) -> str:
     try:    
         # Step 4: Download data (now returning facet counts)
         print(f'FACET VALUES BEFORE DOWNLOADING: {facet_values}')
-        result,total_datasets = download_cmip6_data(**facet_values)
+        result,total_datasets,detailed_summary = download_cmip6_data(**facet_values)
         # Parse the JSON string into a Python dictionary
         result_dict = json.loads(result)
 
@@ -78,7 +78,7 @@ def cmip6_data_process(query, facet_values) -> str:
 
         print(f"--- END PROCESSING QUERY ---\n")
         if int(total_datasets) != 0:
-            display_debug_info("Final Facet Values", facet_values)
+            display_debug_info("Final Facet Values", detailed_summary)
         return {
             "summary": summary,
             "full_result": result,
