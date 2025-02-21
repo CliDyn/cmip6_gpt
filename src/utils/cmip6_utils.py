@@ -199,7 +199,7 @@ def select_facets(query: str) -> Dict[str, Any]:
     - institution_id: Institution identifier for the CMIP6 project (e.g, AWI, UHH)
     - realm: Realm of the climate system (e.g., atmos, ocean, land)
     - sub_experiment_id: Sub-experiment identifier for specific initializations
-    - variant_label: Identifier for the ensemble member specifying realization, initialization method, physics, and forcing indices (e.g., r1i1p1f1). The default value is r1i1p1f1.
+    - variant_label: Identifier for the ensemble member specifying realization, initialization method, physics, and forcing indices (e.g., r1i1p1f1). The default value is r1i1p1f1. ALWAYS select variant_label even if it is not relevant for the search.
 
     **Instructions:**
     1. **Vector Search Priority:** If `source_id`, `experiment_id`, or `variable_id` are relevant to the query, they should **always** be retrieved using vector search **before** considering other facets.
@@ -266,6 +266,7 @@ def select_facet_values(query: str, relevant_facets: List[str], dynamic_args_cla
     Use the provided information about each facet to guide your selection.
     Strictly select only what the user wants; if you think that multiple values could fit the user's prompt, return them all in a list format.
     If a higher-priority facet already contains all necessary information (e.g., includes institution or resolution details), do not include additional, lower-priority facets that overlap or become redundant.
+    ALWAYS keep 'variant_label' in facet_values ​​unless user request specifies otherwise (for example what to have all variant_label)
     Conversation: {formatted_history}
     User query: {query}
 

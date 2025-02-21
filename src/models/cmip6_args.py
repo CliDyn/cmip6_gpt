@@ -36,7 +36,7 @@ class CMIP6DownloadArgs(BaseModel):
         "100 km", "250 km", "500 km", "50 km", "1x1 degree", "200 km",
         "25 km", "10000 km", "10 km", "2x2 degree"
     ]] = Field(default=None, description="Spatial resolution of the data inlcuding high (10km, 25km), medium (50km, 100km, 1x1 degree, 200km, 2x2 degree) and low (250km, 500km, 10000km) resolutions")
-    variant_label: str = Field(default="r1i1p1f1", description="Variant label for the dataset")
+    variant_label: str = Field(default="r1i1p1f1", description="Variant label for the dataset : r<i>i<p>p<f>f, r1 to rX: Different realizations (often ranging from r1 to r10 or higher, depending on the ensemble size). i1 to iY: Different initialization procedures (usually i1 to i2 or i3). p1 to pZ: Different physics schemes (typically p1 to p2 or p3).f1 to fN: Different forcing versions (often f1 to f2 or f3).")
     sub_experiment_id: Optional[str] = Field(
         default=None,
         description="Sub-experiment identifier. Values range from 's1910' to 's2029', representing the year near the end of which the experiment was initialized. For example, 's1950' means the experiment was initialized near the end of 1950. Use 'none' if not applicable. This field is used in climate model experiments to specify different initialization times for ensemble runs."

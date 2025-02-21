@@ -2,6 +2,7 @@ from src.utils.cmip6_utils import download_cmip6_data, create_esgf_search_link, 
 from src.utils.vector_search import perform_vector_search
 from src.models.cmip6_args import create_dynamic_cmip6_args  
 from src.utils.chat_utils import display_debug_info
+from src.utils.chat_utils import display_debug_info_final
 import streamlit as st
 import json
 
@@ -78,7 +79,7 @@ def cmip6_data_process(query, facet_values) -> str:
 
         print(f"--- END PROCESSING QUERY ---\n")
         if int(total_datasets) != 0:
-            display_debug_info("Final Facet Values", detailed_summary)
+            display_debug_info_final("Final Facet Values", detailed_summary)
         return {
             "summary": summary,
             "full_result": result,

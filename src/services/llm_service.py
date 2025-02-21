@@ -78,7 +78,7 @@ def create_prompt_template():
 
             
             "Remember:\n"
-            "- Always use real facet values from cmip6_datasets_search\n"
+            "- Always use real facet_values from cmip6_datasets_search\n"
             "- Focus on finding actual available datasets\n"
             "- Prioritize exact matches to user requirements\n"
             "- Include only verified available datasets in response"
@@ -86,6 +86,7 @@ def create_prompt_template():
             "- When users mention some general concepts like 'ocean data', 'sea ice data', 'atmosphere data' and ect, you can consider 'realm' facet."
             "- DO NOT provide results if you have no datasets, always try to find solution"
             "- ALWAYS follow the protocol for consistent results"
+            "- ALWAYS keep 'variant_label' in facet_values ​​unless user request specifies otherwise (for example what to have all variant_label)"
             # "- for FINAL OUTPUT add JSON obcejct ONLY for final_facet_values. DATASETS and EXPLANATION must be written in regular format"
 
             "In situations where no datasets are found for a given set of facet_values:\n"
