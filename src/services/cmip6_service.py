@@ -1,6 +1,7 @@
 from src.utils.cmip6_utils import download_cmip6_data, create_esgf_search_link, select_facets, select_facet_values,download_opendap_or_not
 from src.utils.vector_search import perform_vector_search
 from src.models.cmip6_args import create_dynamic_cmip6_args  
+from typing import List
 from src.utils.chat_utils import display_debug_info_final, display_opendap_links,display_python_code
 import streamlit as st
 import json
@@ -104,3 +105,12 @@ def cmip6_data_process(query, facet_values, download_opendap = False) -> str:
         error_msg = f"Error in cmip6_data_process: {str(e)}"
         print(error_msg)
         return {"summary": error_msg, "full_result": "", "total_datasets": 0}
+    
+def cmip6_advise(query: str, relevant_facets: List[str], vector_search_fields: List[str]):
+    vector_search_results = None
+    if len(vector_search_fields)>0:
+        vector_search_output = perform_vector_search(query, vector_search_fields)
+        vector_search_results = vector_search_output.get("vector_search_results", {})
+    DynamicCMIP6DownloadArgs = create_dynamic_cmip6_args(relevant_facets, vector_search_results)
+    return (json.dumps(DynamicCMIP6DownloadArgs.schema(), indent=2))
+

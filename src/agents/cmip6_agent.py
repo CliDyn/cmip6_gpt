@@ -1,11 +1,10 @@
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain.tools import StructuredTool
-from src.services.cmip6_service import cmip6_data_process, cmip6_data_search
+from src.services.cmip6_service import cmip6_data_process, cmip6_data_search, cmip6_advise
 from src.services.llm_service import create_llm, create_prompt_template
 from pydantic import BaseModel
 from langchain.callbacks.base import BaseCallbackHandler
 from src.config import Config
-from src.utils.vector_search import perform_vector_search
 from typing import Dict, Any, List
 import json
 
@@ -13,6 +12,7 @@ class CMIP6DataSearchArgsSchema(BaseModel):
     query: str
 class CMIP6AdviseArgsSchema(BaseModel):
     query: str
+    relevant_facets: List[str]
     vector_search_fields: List[str]
 class CMIP6DataProcessArgsSchema(BaseModel):
     query: str
@@ -87,14 +87,21 @@ def create_cmip6_access_tool():
     return cmip6_access_tool
 def create_cmip6_adviser_tool():
     cmip6_adviser_tool = StructuredTool.from_function(
-    func=perform_vector_search,
+    func=cmip6_advise,
     name="cmip6_adviser",
     description=(
-        "Use this tool to answer user questions ONLY if it is regarding variables, source_id (models), or experiments. "
-        "Always add to the query what the user is looking for. For example, if the question is 'tos', you need to write in the query 'variable tos'."
-    "Arguments must be a dictionary containing: \n"
-	"•	query (string): The user’s request"
-	"•	vector_search_fields (list): [list of fields requiring vector search]:  source_id, variable_id, or experiment_id \n"
+        "Use this tool to answer user questions about CMIP6 parameters, including general inquiries or specific details about variables, source_id (models), or experiments.\n"
+        "Only apply vector search when the question specifically involves variable_id, source_id, or experiment_id, and always include what the user is looking for in the query (e.g., if the user asks 'tos', adjust the query to 'variable tos').\n"
+         "Do not use the tool for topics unrelated to CMIP6 parameters.\n"
+         "Always include relevant_facets (e.g., if they ask 'tos', use '['variable_id']' for the relevant_facets or if they explicitly mention facet put it here)\n"
+
+        "Arguments must be a dictionary containing:\n"
+
+        "• query (string): The user’s request, adjusted to clarify their intent\n"
+
+        "• relevant_facets (list): List of relevant facets needed to answer the user’s question\n"
+
+        "• vector_search_fields (list): List of fields requiring vector search (source_id, variable_id, or experiment_id) — leave empty unless the question specifically involves these"
     ),
     args_schema=CMIP6AdviseArgsSchema)
     return cmip6_adviser_tool

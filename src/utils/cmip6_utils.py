@@ -211,6 +211,8 @@ def select_facets(query: str) -> Dict[str, Any]:
       - Avoid breaking down complicated user requests into multiple separate facets.
       - Instead, identify one primary facet that best represents the user’s main requirement.
       - For example, rather than using 'nominal_resolution' and 'institution_id' independently, combine them into a single facet like 'source_id' if it more directly aligns with the user’s needs.
+      - But try not to replace the 'nominal_resolution' with 'source_id' without 'institution_id.'
+      - If uses asks for "high resolution models" or for "low resolution models" without specifying institute, select only 'nominal_resolution'
       - If a user asks for general data (e.g., “sea ice data,” “ocean data,” “atmospheric data”), use the 'realm' facet rather than searching for a specific 'variable_id'.
     6. Alwayt try to select realm when it's possible
     **ALWAYS FOLLOW THE INSTRUCTIONS**
@@ -303,7 +305,10 @@ def select_facet_values(query: str, relevant_facets: List[str], dynamic_args_cla
     Based on the following user query about CMIP6 data and the relevant facets, determine appropriate values for each facet.
     Use the provided information about each facet to guide your selection.
     Strictly select only what the user wants; if you think that multiple values could fit the user's prompt, return them all in a list format.
+    But it is better to keep one facet value if you are not sure, try to select the best match. 
     If a higher-priority facet already contains all necessary information (e.g., includes institution or resolution details), do not include additional, lower-priority facets that overlap or become redundant.
+    But keep the matching to user's query, remember - several values for one (even higher-priority facet) sometimes cannot replace the more general facet (even if it is lower-priority one)
+    For example: rather than using 'nominal_resolution' and 'institution_id' independently, combine them into a single facet like 'source_id' if it more directly aligns with the user’s needs. BUT DO NOT replace the 'nominal_resolution' with 'source_id' if 'institution_id is not provided.'
     ALWAYS keep 'variant_label' in facet_values ​​unless user request specifies otherwise (for example what to have all variant_label)
     Conversation: {formatted_history}
     User query: {query}
