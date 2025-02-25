@@ -25,9 +25,9 @@ def download_cmip6_data(**kwargs):
         conn = SearchConnection('https://esgf-node.llnl.gov/esg-search', distrib=True)
         facets = [
             'source_id', 'frequency', 'nominal_resolution', 'experiment_id',
-            'variable_id', 'sub_experiment_id', 'activity_id', 'realm', 'institution_id'
+            'variable_id', 'sub_experiment_id', 'activity_id', 'realm', 'institution_id',
+            'table_id', 'member_id','grid_label'
         ]
-        
         ctx = conn.new_context(
             project='CMIP6',
             facets=','.join(facets),
@@ -105,6 +105,7 @@ def download_cmip6_data(**kwargs):
         # print(f"Number of datasets found: {result['hit_count']}")
         # print("Facet counts:")
         summary = json.dumps(result, indent=2)
+        query_for_python = dict_to_query_string(param_counts)
         # print(summary)
         # display_debug_info("Facet Counts", summary)
         
@@ -116,7 +117,7 @@ def download_cmip6_data(**kwargs):
         
         print("--- END DOWNLOADING CMIP6 DATA ---\n")
         
-        return summary, result['hit_count'], detailed_summary
+        return summary, result['hit_count'], detailed_summary, query_for_python
         
     except Exception as e:
         error_msg = f"Error downloading CMIP6 data: {str(e)}"
@@ -211,6 +212,7 @@ def select_facets(query: str) -> Dict[str, Any]:
       - Instead, identify one primary facet that best represents the user’s main requirement.
       - For example, rather than using 'nominal_resolution' and 'institution_id' independently, combine them into a single facet like 'source_id' if it more directly aligns with the user’s needs.
       - If a user asks for general data (e.g., “sea ice data,” “ocean data,” “atmospheric data”), use the 'realm' facet rather than searching for a specific 'variable_id'.
+    6. Alwayt try to select realm when it's possible
     **ALWAYS FOLLOW THE INSTRUCTIONS**
     Return your response as a JSON object with the following structure:
     {{
@@ -239,6 +241,42 @@ def select_facets(query: str) -> Dict[str, Any]:
             "relevant_facets": [],
             "requires_vector_search": False,
             "vector_search_fields": []
+        }
+def download_opendap_or_not(query):
+    chat_history = st.session_state.get('messages', [])
+    llm = create_llm(temperature=0)
+    formatted_history = format_chat_history(chat_history)
+    prompt = f"""
+    Based on the following user query {query} and conversation history {formatted_history}, determine whether downloading OpenDAP links is required.
+	•	Default behavior: "requires_download_opendap" should be false unless explicitly stated otherwise.
+	Set to true if:
+	•	The user explicitly requests OpenDAP links.
+	•	The user confirms they want to download OpenDAP links (e.g., by answering “yes” to a related question).
+	Set to false if:
+	•	The user does not mention downloading OpenDAP links.
+	•	The request is only for metadata, explanations, or general information.
+    **ALWAYS FOLLOW THE INSTRUCTIONS**
+    Return your response as a JSON object with the following structure:
+    {{
+        "requires_download_opendap": true/false (whether downoloading of openDAP links are required),
+    }}
+    """
+    response = llm.invoke(prompt)
+    print("Raw LLM Response:")
+    print(response.content)
+
+    try:
+        cleaned_content = response.content.replace("```json", "").replace("```", "").strip()
+        result = json.loads(cleaned_content)
+        print("Parsed JSON Result:")
+        print(json.dumps(result, indent=2))
+        return result
+    except json.JSONDecodeError as e:
+        error_msg = f"Error parsing JSON: {str(e)}"
+        print(error_msg)
+        print(f"Raw content: {response.content}")
+        return {
+            "requires_download_opendap": False
         }
 
 def select_facet_values(query: str, relevant_facets: List[str], dynamic_args_class) -> Dict[str, Any]:
@@ -293,3 +331,79 @@ def select_facet_values(query: str, relevant_facets: List[str], dynamic_args_cla
         facet_values = {}
 
     return facet_values
+def dict_to_query_string(data):
+    """
+    Convert a nested dictionary into a specific query string format.
+    
+    Args:
+        data (dict): A nested dictionary with model names as keys and attribute dictionaries as values
+    
+    Returns:
+        str: A formatted query string
+    """
+    # Initialize collections for each attribute
+    attributes = {
+        'activity_id': set(),
+        'institution_id': set(),
+        'source_id': set(),
+        'experiment_id': set(),
+        'member_id': set(),
+        'table_id': set(),
+        'variable_id': set(),
+        'grid_label': set()
+    }
+    
+    # Extract source_id (model names) from the top level keys
+    attributes['source_id'] = set(data.keys())
+    
+    # Extract other attributes from each model's data
+    for model_name, model_data in data.items():
+        for attr, values in model_data.items():
+            if attr in attributes:
+                # Add all keys from the values dictionary
+                attributes[attr].update(values.keys())
+    
+    # For member_id, table_id, and variable_id, we assume they should be single values
+    # based on your example output (using the most common one or first one)
+    
+    # Check if all models have the same member_id
+    member_ids = set()
+    for model_data in data.values():
+        if 'member_id' in model_data:
+            member_ids.update(model_data['member_id'].keys())
+    # If there's only one member_id across all models, use it as a string
+    if len(member_ids) == 1:
+        attributes['member_id'] = member_ids.pop()
+    
+    # Same for table_id
+    table_ids = set()
+    for model_data in data.values():
+        if 'table_id' in model_data:
+            table_ids.update(model_data['table_id'].keys())
+    if len(table_ids) == 1:
+        attributes['table_id'] = table_ids.pop()
+    
+    # Same for variable_id
+    variable_ids = set()
+    for model_data in data.values():
+        if 'variable_id' in model_data:
+            variable_ids.update(model_data['variable_id'].keys())
+    if len(variable_ids) == 1:
+        attributes['variable_id'] = variable_ids.pop()
+    
+    # Format the output string
+    parts = []
+    for attr, values in attributes.items():
+        if isinstance(values, set):
+            values_list = sorted(list(values))
+            if len(values_list) == 1:
+                parts.append(f"{attr} == '{values_list[0]}'")
+            else:
+                formatted_values = "', '".join(values_list)
+                parts.append(f"{attr} == ['{formatted_values}']")
+        else:
+            # For single string values (member_id, table_id, etc.)
+            parts.append(f"{attr} == '{values}'")
+    
+    # Join with " & " separator
+    return " & ".join(parts)

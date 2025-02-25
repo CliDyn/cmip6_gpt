@@ -1,8 +1,7 @@
-from src.utils.cmip6_utils import download_cmip6_data, create_esgf_search_link, select_facets, select_facet_values
+from src.utils.cmip6_utils import download_cmip6_data, create_esgf_search_link, select_facets, select_facet_values,download_opendap_or_not
 from src.utils.vector_search import perform_vector_search
 from src.models.cmip6_args import create_dynamic_cmip6_args  
-from src.utils.chat_utils import display_debug_info
-from src.utils.chat_utils import display_debug_info_final
+from src.utils.chat_utils import display_debug_info_final, display_opendap_links,display_python_code
 import streamlit as st
 import json
 
@@ -50,11 +49,12 @@ def cmip6_data_search(query: str) -> str:
 
     print(f"Selected facet values: {facet_values}")
     return facet_values, vector_search_full_results 
-def cmip6_data_process(query, facet_values) -> str:
+def cmip6_data_process(query, facet_values, download_opendap = False) -> str:
     try:    
         # Step 4: Download data (now returning facet counts)
         print(f'FACET VALUES BEFORE DOWNLOADING: {facet_values}')
-        result,total_datasets,detailed_summary = download_cmip6_data(**facet_values)
+        result,total_datasets,detailed_summary, query_for_python_code = download_cmip6_data(**facet_values)
+        download_opendap = download_opendap_or_not(query).get("requires_download_opendap", False)
         # Parse the JSON string into a Python dictionary
         result_dict = json.loads(result)
 
@@ -71,15 +71,30 @@ def cmip6_data_process(query, facet_values) -> str:
         # Create ESGF search link
         esgf_link = create_esgf_search_link(facet_values)
 
-        summary += f"\n\nYou can explore these datasets in more detail using this ESGF search link:\n{esgf_link}"
+
+        summary += f"\n\nyou can explore these datasets in more detail using this ESGF search link:\n{esgf_link}"
 
         summary += "\n\nThis link will search for datasets that match the specified criteria. For facets with multiple values, it will search for datasets matching ANY of those values. If you need to refine your search further, you can modify the parameters directly on the ESGF search page."
 
         summary += "\n\nIf you need more specific details about any of these datasets or have any questions, please feel free to ask!"
+        # Add Python download code section
+        summary += f"\n\nYou can find more details about these datasets under 'Detailed information on datasets' tab"
+        summary += "\n\n## Download data using Python\n"
+        summary += "You can download and analyze CMIP6 data from Google Cloude Storage using python code provided under 'Python access from Google Cloude Storage' tab\n\n"
+        if download_opendap == True:
+            summary += f"\n\nYou can also download data using opendap links provided bellow"
+        else:
+            summary += f"\n\nIf you are intrestead I can also provide openDAP links for datasets"
 
         print(f"--- END PROCESSING QUERY ---\n")
         if int(total_datasets) != 0:
-            display_debug_info_final("Final Facet Values", detailed_summary)
+            print(f' download opendap?: {download_opendap}')
+            print(type(download_opendap))
+            all_model_links = display_debug_info_final("Detailed information on datasets", detailed_summary,download_opendap)
+            if download_opendap == True:
+                display_opendap_links(all_model_links)
+            display_python_code(query_for_python_code)
+
         return {
             "summary": summary,
             "full_result": result,

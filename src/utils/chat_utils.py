@@ -2,6 +2,7 @@ import streamlit as st
 from typing import List, Optional, Dict, Any
 import pandas as pd
 import json
+import requests
 def display_chat_messages():
     """
     Displays chat messages from the session state in a chat-like format.
@@ -97,66 +98,67 @@ def display_debug_info(title, content):
     """
     with st.expander(f"{title}", expanded=False):
         st.json(content)
-def display_debug_info_final(title, content):
+def display_debug_info_final(title, content, download_opendap = False):
     """
-    Displays debugging information in an expandable table format and provides
-    OpenDAP links download functionality for each model with persistent UI state.
-    Prioritizes specific data nodes and preserves unique datasets with different date ranges.
+    Displays debugging information in an expandable table format and collects
+    all OpenDAP links across models.
     
     Args:
         title (str): The title for the expandable section
         content (str): The JSON content to display
+        
+    Returns:
+        list: All collected OpenDAP links with model information when title is "Final Facet Values"
     """
     data = json.loads(content)
+    all_model_links = []
     
-    if title == "Facet Counts":
-        with st.expander(f"{title}", expanded=False):
-            st.json(content)
-    elif title == "Final Facet Values":
-        with st.expander(f"{title}", expanded=False):
-            st.write(f"Total datasets found: {data['hit_count']}")
+    with st.expander(f"{title}", expanded=False):
+        st.write(f"Total datasets found: {data['hit_count']}")
+        
+        # Initialize session state for OpenDAP links if not exists
+        if 'opendap_links' not in st.session_state:
+            st.session_state.opendap_links = {}
             
-            # Initialize session state for OpenDAP links if not exists
-            if 'opendap_links' not in st.session_state:
-                st.session_state.opendap_links = {}
+        for model_name, model_data in data['models'].items():
+            st.write(f"### {model_name}")
+            
+            # Create tabs for each model
+            tab_titles = ["Model Information"]
+            if download_opendap:
+                tab_titles.append("OpenDAP Links")
+            tabs = st.tabs(tab_titles)
+            with tabs[0]: 
+                # Create DataFrame for the model's parameters
+                model_rows = []
+                model_rows.append({
+                    'Parameter': 'Total Datasets',
+                    'Values': str(model_data['dataset_count']),
+                    'Details': ''
+                })
                 
-            for model_name, model_data in data['models'].items():
-                st.write(f"### {model_name}")
+                for param, values in model_data.items():
+                    if param != 'dataset_count':
+                        value_str = ', '.join([f"{k}: {v}" for k, v in values.items()])
+                        total_count = sum(values.values())
+                        model_rows.append({
+                            'Parameter': param,
+                            'Values': f"Total: {total_count}",
+                            'Details': value_str
+                        })
                 
-                # Create tabs for each model
-                model_info_tab, opendap_links_tab = st.tabs(["Model Information", "OpenDAP Links"])
-                
-                with model_info_tab:
-                    # Create DataFrame for the model's parameters
-                    model_rows = []
-                    model_rows.append({
-                        'Parameter': 'Total Datasets',
-                        'Values': str(model_data['dataset_count']),
-                        'Details': ''
-                    })
-                    
-                    for param, values in model_data.items():
-                        if param != 'dataset_count':
-                            value_str = ', '.join([f"{k}: {v}" for k, v in values.items()])
-                            total_count = sum(values.values())
-                            model_rows.append({
-                                'Parameter': param,
-                                'Values': f"Total: {total_count}",
-                                'Details': value_str
-                            })
-                    
-                    df = pd.DataFrame(model_rows)
-                    st.dataframe(
-                        df,
-                        column_config={
-                            "Parameter": st.column_config.Column("Parameter", width="medium"),
-                            "Values": st.column_config.Column("Count", width="small"),
-                            "Details": st.column_config.Column("Detailed Breakdown", width="large")
-                        },
-                        hide_index=True
-                    )
-                
-                with opendap_links_tab:
+                df = pd.DataFrame(model_rows)
+                st.dataframe(
+                    df,
+                    column_config={
+                        "Parameter": st.column_config.Column("Parameter", width="medium"),
+                        "Values": st.column_config.Column("Count", width="small"),
+                        "Details": st.column_config.Column("Detailed Breakdown", width="large")
+                    },
+                    hide_index=True
+                )
+            if download_opendap and len(tabs) > 1:
+                with tabs[1]:  # OpenDAP Links tab
                     # RESET SESSION STATE FOR THIS MODEL (FOR TESTING)
                     # Uncomment to force refresh data when testing
                     # if model_name in st.session_state.opendap_links:
@@ -178,12 +180,6 @@ def display_debug_info_final(title, content):
                                 if len(value_list) > 1:
                                     multi_value_parameters[param] = value_list
                         
-                        # # Log parameters with multiple values for debugging
-                        # if multi_value_parameters:
-                        #     st.write("Parameters with multiple values:")
-                        #     for param, values in multi_value_parameters.items():
-                        #         st.write(f"- {param}: {', '.join(values)}")
-                        
                         # Get all combinations of parameter values
                         param_combinations = []
                         
@@ -200,9 +196,6 @@ def display_debug_info_final(title, content):
                         
                         generate_combinations(parameter_values, 0, {})
                         
-                        # Log number of combinations for debugging
-                        # st.write(f"Generated {len(param_combinations)} parameter combinations to search")
-                        
                         # Preferred nodes in order of priority
                         preferred_nodes = ["aims3.llnl.gov", "esgf-data1.llnl.gov", "esgf-data2.llnl.gov"]
                         
@@ -213,15 +206,9 @@ def display_debug_info_final(title, content):
                         # Fetch OpenDAP links for each parameter combination
                         with st.spinner(f"Fetching OpenDAP links for {model_name}..."):
                             for combination_idx, combination in enumerate(param_combinations):
-                                # Display current combination being searched
-                                search_params_str = ', '.join([f"{k}='{v}'" for k, v in combination.items()])
-                                # st.write(f"[{combination_idx+1}/{len(param_combinations)}] Searching with parameters: {search_params_str}")
-                                
                                 try:
                                     # Call esgf_search with the current combination of parameters
                                     all_links = esgf_search(**combination)
-                                    
-                                    # st.write(f"Found {len(all_links)} links for this combination")
                                     
                                     # Process each link
                                     for link in all_links:
@@ -298,30 +285,35 @@ def display_debug_info_final(title, content):
                         
                         # Store links with their parameters in session state
                         st.session_state.opendap_links[model_name] = best_results
-                        st.write(f"Total unique OpenDAP links found: {len(best_results)}")
-                        
-                        # Debug: count by experiment_id and frequency
-                        if best_results:
-                            experiment_counts = {}
-                            frequency_counts = {}
-                            
-                            for result in best_results:
-                                exp_id = result['params'].get('experiment_id', 'unknown')
-                                freq = result['params'].get('frequency', 'unknown')
-                                
-                                experiment_counts[exp_id] = experiment_counts.get(exp_id, 0) + 1
-                                frequency_counts[freq] = frequency_counts.get(freq, 0) + 1
-                            
-                            # st.write("Results by experiment_id:", experiment_counts)
-                            # st.write("Results by frequency:", frequency_counts)
                     
                     # Display OpenDAP links as a DataFrame with dynamic parameter columns
                     if st.session_state.opendap_links.get(model_name):
                         links_data = st.session_state.opendap_links[model_name]
                         
+                        # Check if number of links exceeds limit
+                        if len(links_data) > 500:
+                            st.warning(f"⚠️ This model has {len(links_data)} OpenDAP links, which exceeds the 500 link limit. Please access the ESGF server directly to download this data.")
+                            
+                            # Show only first 10 links as preview
+                            display_links = links_data[:10]
+                            st.write("Showing first 10 links as preview:")
+                        else:
+                            display_links = links_data
+                            st.write(f"Total unique OpenDAP links found: {len(links_data)}")
+                        
+                        # Collect all links for the final return value
+                        for link_data in links_data:
+                            all_model_links.append({
+                                "model": model_name,
+                                "node": link_data['node'],
+                                "filename": link_data['filename'],
+                                "url": link_data['url'],
+                                **link_data['params']  # Include all parameters
+                            })
+                        
                         # Get parameters with more than one unique value across all results
                         param_to_values = {}
-                        for link_data in links_data:
+                        for link_data in display_links:
                             for param, value in link_data['params'].items():
                                 if param not in param_to_values:
                                     param_to_values[param] = set()
@@ -329,11 +321,11 @@ def display_debug_info_final(title, content):
                         
                         # Identify parameters with multiple values
                         dynamic_columns = [param for param, values in param_to_values.items() 
-                                          if len(values) > 1]
+                                        if len(values) > 1]
                         
                         # Extract and display node and filename information with dynamic parameter columns
                         link_info = []
-                        for i, link_data in enumerate(links_data):
+                        for i, link_data in enumerate(display_links):
                             # Extract date range (everything from last underscore to before .nc)
                             filename = link_data['filename']
                             date_range = "unknown"
@@ -345,9 +337,10 @@ def display_debug_info_final(title, content):
                                     if '-' in date_part:  # Make sure it looks like a date range
                                         date_range = date_part
                             
-                            # Create entry with base columns
+                            # Create entry with model name and base columns
                             entry = {
                                 "ID": i+1,
+                                "Model": model_name,
                                 "Data Node": link_data['node'],
                                 "Date Range": date_range
                             }
@@ -370,6 +363,7 @@ def display_debug_info_final(title, content):
                         # Configure column order and properties
                         column_config = {
                             "ID": st.column_config.Column("ID", width="small"),
+                            "Model": st.column_config.Column("Model", width="medium"),
                             "Data Node": st.column_config.Column("Data Node", width="medium"),
                             "Date Range": st.column_config.Column("Date Range", width="medium")
                         }
@@ -393,11 +387,69 @@ def display_debug_info_final(title, content):
                         
                     else:
                         st.write("No OpenDAP links available for this model.")
-                
-                st.write("---")
+                        # Return all collected links
+                    return pd.DataFrame(all_model_links)
+            
+            st.write("---")
+    # Return empty list for other titles
+    return all_model_links
 
-#!/usr/bin/env python
-import requests
+def display_opendap_links(df: pd.DataFrame) -> None:
+    """
+    Display a pandas DataFrame containing unique OpenDAP links in Streamlit.
+    
+    Args:
+        df (pd.DataFrame): DataFrame containing the data to display
+        link_column (str): Name of the column containing the links (default: 'Link')
+        
+    Returns:
+        None
+    """
+    link_column = 'url'
+    # Remove duplicate links
+    if link_column in df.columns:
+        initial_count = len(df)
+        df = df.drop_duplicates(subset=[link_column], keep='first')
+        unique_count = len(df)
+    else:
+        st.warning(f"Column '{link_column}' not found in DataFrame")
+        initial_count = len(df)
+        unique_count = initial_count
+
+    # Add a title
+    st.subheader("OpenDAP Links: ")
+    
+    # Display the DataFrame
+    st.dataframe(
+        df,
+        use_container_width=True,
+        height=400,
+    )
+    
+    # Display stats
+    st.write(f"Total number of links: {unique_count}")
+def display_python_code(query):
+    code = f'''
+    import pandas as pd
+    import xarray as xr
+    import gcsfs
+    # Load the metadata CSV
+    df = pd.read_csv('https://storage.googleapis.com/cmip6/cmip6-zarr-consolidated-stores.csv')
+    # Filter the dataframe
+    df_spec = df.query("{query}")
+    # get the path to a specific zarr store (the first one from the dataframe above)
+    zstore = df_spec.zstore.values[-1]
+    # Initialize GCS filesystem with anonymous access
+    gcs = gcsfs.GCSFileSystem(token="anon")
+    # Create a mapper for the Zarr store
+    mapper = gcs.get_mapper(zstore)
+    # Open the dataset
+    ds = xr.open_zarr(mapper, consolidated=True)'''
+    with st.expander("Python access from Google Cloude Storage", expanded=False):
+        st.header("CMIP6 Data Access Code")
+        st.write("This code loads climate model data from Google Cloud Storage using Zarr format.")
+        st.code(code, language='python')
+
 
 # Author: Unknown
 # I got the original version from a word document published by ESGF

@@ -75,6 +75,7 @@ def create_prompt_template():
             # " \"final_facet_values\": {...},\n" 
             " datasets: List of available datasets\n"
             " Explanation: Justify why these datasets are most relevant\n\n"
+            " You should mention Final Facet Values tab where user can find more details and also OpenDAP Links that can be used to download data"
 
             
             "Remember:\n"
@@ -87,6 +88,8 @@ def create_prompt_template():
             "- DO NOT provide results if you have no datasets, always try to find solution"
             "- ALWAYS follow the protocol for consistent results"
             "- ALWAYS keep 'variant_label' in facet_values ​​unless user request specifies otherwise (for example what to have all variant_label)"
+            "- mention Detailed information on datasets tab where user can find more details and also option to have OpenDAP Links that can be used to download data"
+            "- Also mention the python code provided under 'Python access from Google Cloude Storage' tab that can be used for data downloading from Google Cloude Storage"
             # "- for FINAL OUTPUT add JSON obcejct ONLY for final_facet_values. DATASETS and EXPLANATION must be written in regular format"
 
             "In situations where no datasets are found for a given set of facet_values:\n"
@@ -167,3 +170,4 @@ def create_split_query_template():
         )
     )
     return split_query_template
+    

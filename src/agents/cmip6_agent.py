@@ -80,7 +80,7 @@ def create_cmip6_access_tool():
         "Arguments must be a dictionary containing: \n"
 	"•	query (string): The user’s request"
 	"•	facet_values (dict): The required facet parameters for the CMIP6 data \n"
-
+    "•	download_opendap (boolean): True/False boolean variable to downoload/not-download the openDAP links. Ask user if the user wants to download openDAP links if the value is False \n"
     "If you lack the required facet_values or the user’s request has changed in a way that necessitates re-evaluating them or if total_datasets = 0, use cmip6_datasets_search tool."
     ),
     args_schema=CMIP6DataProcessArgsSchema)
