@@ -429,24 +429,19 @@ def display_opendap_links(df: pd.DataFrame) -> None:
     # Display stats
     st.write(f"Total number of links: {unique_count}")
 def display_python_code(query):
-    code = f'''
+    code = f"""
     import pandas as pd
     import xarray as xr
-    import gcsfs
     # Load the metadata CSV
     df = pd.read_csv('https://storage.googleapis.com/cmip6/cmip6-zarr-consolidated-stores.csv')
     # Filter the dataframe
     df_spec = df.query("{query}")
     # get the path to a specific zarr store (the first one from the dataframe above)
     zstore = df_spec.zstore.values[-1]
-    # Initialize GCS filesystem with anonymous access
-    gcs = gcsfs.GCSFileSystem(token="anon")
-    # Create a mapper for the Zarr store
-    mapper = gcs.get_mapper(zstore)
-    # Open the dataset
-    ds = xr.open_zarr(mapper, consolidated=True)'''
+    # Open the first dataset
+    ds = xr.open_zarr(zstore, consolidated=True, storage_options={{'token':'anon'}})"""
     with st.expander("Python access from Google Cloude Storage", expanded=False):
-        st.header("CMIP6 Data Access Code")
+        st.header("CMIP6 Data Access Code") 
         st.write("This code loads climate model data from Google Cloud Storage using Zarr format.")
         st.code(code, language='python')
 

@@ -22,7 +22,7 @@ def download_cmip6_data(**kwargs):
     print(f"Search parameters: {kwargs}")
     
     try:
-        conn = SearchConnection('https://esgf-node.llnl.gov/esg-search', distrib=True)
+        conn = SearchConnection('https://esgf-data.dkrz.de/esg-search', distrib=True)
         facets = [
             'source_id', 'frequency', 'nominal_resolution', 'experiment_id',
             'variable_id', 'sub_experiment_id', 'activity_id', 'realm', 'institution_id',
@@ -131,7 +131,7 @@ def create_esgf_search_link(facet_values):
     Returns:
         link (str): A fully constructed ESGF search URL.
     """
-    esgf_base_url = "https://aims2.llnl.gov/search/cmip6/?"
+    esgf_base_url = "https://esgf-data.dkrz.de/search/cmip6/?"
     active_facets = {}
 
     print('Creating ESGF search link...')
@@ -308,7 +308,7 @@ def select_facet_values(query: str, relevant_facets: List[str], dynamic_args_cla
     But it is better to keep one facet value if you are not sure, try to select the best match. 
     If a higher-priority facet already contains all necessary information (e.g., includes institution or resolution details), do not include additional, lower-priority facets that overlap or become redundant.
     But keep the matching to user's query, remember - several values for one (even higher-priority facet) sometimes cannot replace the more general facet (even if it is lower-priority one)
-    For example: rather than using 'nominal_resolution' and 'institution_id' independently, combine them into a single facet like 'source_id' if it more directly aligns with the user’s needs. BUT DO NOT replace the 'nominal_resolution' with 'source_id' if 'institution_id is not provided.'
+    For example: rather than using 'nominal_resolution' and 'institution_id' independently, combine them into a single facet like 'source_id' if it more directly aligns with the user's needs. BUT DO NOT replace the 'nominal_resolution' with 'source_id' if 'institution_id is not provided.'
     ALWAYS keep 'variant_label' in facet_values ​​unless user request specifies otherwise (for example what to have all variant_label)
     Conversation: {formatted_history}
     User query: {query}
