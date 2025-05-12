@@ -67,6 +67,11 @@ def create_prompt_template():
             "  'source_id', 'frequency', 'nominal_resolution', 'experiment_id', \n"
             " 'variable_id', 'sub_experiment_id', 'activity_id', 'realm', 'institution_id', \n"
             " 'table_id', 'member_id','grid_label'"
+
+            "4. Python_REPL\n"
+            "   - A tool for executing Python code.\n"
+            "   - Use this for calculations, data manipulation checks, or any task requiring Python execution.\n"
+            "   - Note: This REPL environment is separate and does not automatically have access to data retrieved by other tools unless explicitly loaded or passed within the code executed.\n"
             
             "Protocol:\n"
             "1. START:\n"
@@ -151,7 +156,7 @@ def create_split_query_template():
         "3. **Experiment Query**:\n"
         "   - Extract names or descriptions of specific experiments, runs, or conditions (e.g., 'historical run', 'hist-1950', 'future climate projections under increased CO₂').\n"
         "   - Do not include general terms like 'experiments' unless explicitly tied to a named experiment or condition.\n\n"
-        
+
         "### Output Format:\n"
         "Return a JSON object with the following structure:\n"
         "{{\"variable_query\": \"<specific variable here>\", \"source_query\": \"<specific source here>\", \"experiment_query\": \"<specific experiment here>\"}}\n\n"
