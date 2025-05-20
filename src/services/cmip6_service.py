@@ -100,8 +100,15 @@ def cmip6_data_process(query, facet_values, download_opendap = False) -> str:
             if download_opendap == True:
                 display_opendap_links(all_model_links)
             code_for_access = display_python_code(query_for_python_code)
-            
+
             summary += f"\n\nThis is a code you can use for data access {code_for_access} (do not show this in your answer, for your usage)"
+
+            if "pending_expanders" in st.session_state:
+                st.session_state.pending_expanders.append({
+                    "detailed_summary": detailed_summary,
+                    "download_opendap": download_opendap,
+                    "query_for_python_code": query_for_python_code
+                })
 
         return {
             "summary": summary,
