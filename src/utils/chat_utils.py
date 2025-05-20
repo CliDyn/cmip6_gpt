@@ -31,11 +31,11 @@ def display_chat_messages():
                 try:
                     clean, img = parse_image_markdown(message["content"])
                     if img:
-                        col1, col2 = st.columns([3, 2])
+                        col1, col2 = st.columns([1, 3])
                         with col1:
                             st.markdown(clean)
                         with col2:
-                            st.image(img, use_column_width=True)
+                            st.image(img,use_container_width = True)
                     else:
                         st.markdown(clean)
                 except Exception:
@@ -83,11 +83,11 @@ def handle_user_input(agent_executor):
                 clean, img = parse_image_markdown(full_response)
                 if img:
                     message_placeholder.empty()
-                    col1, col2 = st.columns([3, 2])
+                    col1, col2 = st.columns([1, 3])
                     with col1:
                         st.markdown(clean)
                     with col2:
-                        st.image(img, use_column_width=True)
+                        st.image(img,use_container_width = True)
                 else:
                     message_placeholder.markdown(clean)
             except Exception as e:

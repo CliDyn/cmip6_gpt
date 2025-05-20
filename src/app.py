@@ -53,7 +53,7 @@ def run_app():
         st.title("Configuration")
         model_name = st.selectbox(
             "Select Model", 
-            ["gpt-4o","gpt-4o-mini", "gpt-3.5-turbo", "o1-preview"], 
+            ["gpt-4o","gpt-4.1","gpt-4.1-nano","gpt-4o-mini"], 
             key="model_name"
         )
         if model_name != Config.get_model_name():

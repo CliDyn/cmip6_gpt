@@ -136,7 +136,7 @@ def create_prompt_template():
 
             "4. VISUALIZATION & OUTPUT:\n"
             "- Generate figures (saved automatically by Python_REPL) with clear titles and axis labels.\n"
-            "- Provide figure file paths in the tool output."
+            "- Provide figure file paths ONLY from 'figures'in the tool output."
 
 
         )),
