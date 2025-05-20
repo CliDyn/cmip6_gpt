@@ -142,34 +142,31 @@ def python_repl(query: str) -> str:
     # Capture stdout
     old_stdout = sys.stdout
     sys.stdout = mystdout = StringIO()
-    
-    # Create a dictionary for local variables
+
     local_vars = {}
     saved_files = []
-    
+    error = None
+
     try:
-        # Try to execute as an expression first
         try:
-            result = eval(query, {}, local_vars)
+            result = eval(query, local_vars)
             if result is not None:
                 print(repr(result))
         except SyntaxError:
-            # If fails as an expression, execute as a statement
-            exec(query, {}, local_vars)
+            exec(query, local_vars)
+
         for num in plt.get_fignums():
             fig = plt.figure(num)
-            # use a uuid so names never collide
             fname = os.path.join(temp_dir, f"figure_{uuid.uuid4().hex}.png")
             fig.savefig(fname)
             saved_files.append(fname)
-            plt.close('all')
+            plt.close(fig)
     except Exception as e:
-        # Capture and return any errors
+        error = f"{e}\n{traceback.format_exc()}"
         print(f"Error: {str(e)}")
         print(traceback.format_exc())
-    
-    # Restore stdout and get the output
-    sys.stdout = old_stdout
+    finally:
+        sys.stdout = old_stdout
+
     output = mystdout.getvalue()
-    
-    return {"stdout": output, "figures": saved_files}
+    return {"stdout": output, "figures": saved_files, "error": error}

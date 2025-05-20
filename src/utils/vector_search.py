@@ -228,7 +228,7 @@ def perform_vector_search(query: str, vector_search_fields: List[str]) -> Dict[s
 
     return {
         "vector_search_results": vector_search_results,
-        "vector_serach_full_results": schema,
+        "vector_search_full_results": schema,
         "split_queries": split_queries,
         "cmip6_args": DynamicCMIP6DownloadArgs
     }

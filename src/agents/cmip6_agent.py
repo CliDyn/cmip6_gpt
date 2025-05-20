@@ -274,28 +274,31 @@ class PersistentPythonREPL:
         old_stdout = sys.stdout
         sys.stdout = mystdout = StringIO()
         saved_files = []
+        error = None
 
         try:
             try:
-                result = eval(query, {}, self.locals)
+                result = eval(query, self.locals)
                 if result is not None:
                     print(repr(result))
             except SyntaxError:
-                exec(query, {}, self.locals)
+                exec(query, self.locals)
 
             for num in plt.get_fignums():
                 fig = plt.figure(num)
                 fname = os.path.join(self.temp_dir, f"figure_{uuid.uuid4().hex}.png")
-                fig.savefig(fname,dpi=300)
+                fig.savefig(fname, dpi=300)
                 saved_files.append(fname)
-                plt.close('all')
+                plt.close(fig)
         except Exception as e:
+            error = f"{e}\n{traceback.format_exc()}"
             print(f"Error: {str(e)}")
             print(traceback.format_exc())
+        finally:
+            sys.stdout = old_stdout
 
-        sys.stdout = old_stdout
         output = mystdout.getvalue()
-        return {"stdout": output, "figures": saved_files}
+        return {"stdout": output, "figures": saved_files, "error": error}
 
 def create_python_repl_tool(repl_instance: PersistentPythonREPL):
     """

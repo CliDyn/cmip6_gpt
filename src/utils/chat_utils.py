@@ -5,6 +5,17 @@ import os
 import re
 import json
 import requests
+
+
+def parse_image_markdown(text: str) -> (str, Optional[str]):
+    """Extract image path from markdown and return cleaned text and absolute path."""
+    match = re.search(r"!\[.*?\]\((.*?)\)", text)
+    if match:
+        path = match.group(1)
+        full_path = os.path.join(os.getcwd(), "temp_figures", os.path.basename(path))
+        clean_text = re.sub(r"!\[.*?\]\(.*?\)", "", text).strip()
+        return clean_text, full_path
+    return text, None
 def display_chat_messages():
     """
     Displays chat messages from the session state in a chat-like format.
@@ -14,21 +25,15 @@ def display_chat_messages():
     """
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            if message["role"] == 'user':
+            if message["role"] == "user":
                 st.markdown(message["content"])
             else:
                 try:
-                    m = re.search(r'!\[.*?\]\((.*?)\)', message["content"])
-                    print('showing the image')
-                    if m:
-                        path = m.group(1)
-                        project_root = os.getcwd()
-                        full_path = f'{project_root}'+'/temp_figures/'+f'{os.path.basename(path)}'
-                        clean_answer = re.sub(r'!\[.*?\]\(.*?\)', '', message["content"]).strip()
-                        st.markdown(clean_answer)
-                        st.image(full_path , width=750)
-
-                except:
+                    clean, img = parse_image_markdown(message["content"])
+                    st.markdown(clean)
+                    if img:
+                        st.image(img, width=750)
+                except Exception:
                     st.markdown(message["content"])
 
 
@@ -56,44 +61,11 @@ def handle_user_input(agent_executor):
                 for chunk in agent_executor.stream({"input": user_input, "chat_history": st.session_state.messages}):
                     if isinstance(chunk, dict) and "output" in chunk:
                         full_response += chunk["output"]
-                try:
-                    m = re.search(r'!\[.*?\]\((.*?)\)', full_response)
-                    print('showing the image')
-                    if m:
-                        path = m.group(1)
-                        project_root = os.getcwd()
-                        full_path = f'{project_root}'+'/temp_figures/'+f'{os.path.basename(path)}'
-                        clean_answer = re.sub(r'!\[.*?\]\(.*?\)', '', full_response).strip()
-                        message_placeholder.markdown(clean_answer)
-                        st.image(full_path , width=750)
-                    else:
-                        message_placeholder.markdown(full_response)
-                except:
-                    message_placeholder.markdown(full_response)
-
-                # Parse the full_response if it's a JSON string
-                # try:
-                #     response_dict = json.loads(full_response)
-                #     if isinstance(response_dict, dict) and "summary" in response_dict and "full_result" in response_dict:
-                #         message_placeholder.markdown(response_dict["summary"])
-                #         with st.expander("Full CMIP6 Data Request Result", expanded=False):
-                #             st.json(json.loads(response_dict["full_result"]))
-                #     elif isinstance(response_dict, dict) and "Stdout" in response_dict and "Figures" in response_dict:
-                #         st.subheader("Console Output")
-                #         message_placeholder.markdown(response_dict["Stdout"].rstrip())
-                #         print(response_dict)
-                #         if response_dict["Figures"]:
-                #             st.subheader("Generated Figures")
-                #             for fig_path in response_dict["Figures"]:
-                #                 print(f'plotting the {fig_path}')
-                #                 project_root = os.getcwd()
-                #                 full_path = f'{project_root}'+'/temp_figures/'+f'{os.path.basename(fig_path)}'
-                #                 st.image(full_path , use_column_width=True)
-                #     else:
-                #         message_placeholder.markdown(full_response)
-                # except json.JSONDecodeError:
-                #     message_placeholder.markdown(full_response)
-
+                        message_placeholder.markdown(full_response + "▌")
+                clean, img = parse_image_markdown(full_response)
+                message_placeholder.markdown(clean)
+                if img:
+                    st.image(img, width=750)
             except Exception as e:
                 error_message = f"An error occurred: {str(e)}\n\nPlease try rephrasing your query or contact support if the issue persists."
                 st.error(error_message)
