@@ -30,11 +30,28 @@ def display_chat_messages():
             else:
                 try:
                     clean, img = parse_image_markdown(message["content"])
-                    st.markdown(clean)
                     if img:
-                        st.image(img, width=750)
+                        col1, col2 = st.columns([3, 2])
+                        with col1:
+                            st.markdown(clean)
+                        with col2:
+                            st.image(img, use_column_width=True)
+                    else:
+                        st.markdown(clean)
                 except Exception:
                     st.markdown(message["content"])
+                for expander in message.get("expanders", []):
+                    if expander.get("type") == "dataset_info":
+                        links_df = display_debug_info_final(
+                            "Detailed information on datasets",
+                            expander["detailed_summary"],
+                            expander["download_opendap"],
+                        )
+                        if expander["download_opendap"]:
+                            display_opendap_links(links_df)
+                        display_python_code(expander["query_for_python_code"])
+                    elif expander.get("type") == "debug_info":
+                        display_debug_info(expander["title"], expander["content"], store=False)
 
 
 def handle_user_input(agent_executor):
@@ -63,16 +80,24 @@ def handle_user_input(agent_executor):
                         full_response += chunk["output"]
                         message_placeholder.markdown(full_response + "▌")
                 clean, img = parse_image_markdown(full_response)
-                message_placeholder.markdown(clean)
                 if img:
-                    st.image(img, width=750)
+                    message_placeholder.empty()
+                    col1, col2 = st.columns([3, 2])
+                    with col1:
+                        st.markdown(clean)
+                    with col2:
+                        st.image(img, use_column_width=True)
+                else:
+                    message_placeholder.markdown(clean)
             except Exception as e:
                 error_message = f"An error occurred: {str(e)}\n\nPlease try rephrasing your query or contact support if the issue persists."
                 st.error(error_message)
                 full_response = error_message
 
         # Add AI response to chat history
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+        expanders = st.session_state.get("pending_expanders", [])
+        st.session_state.messages.append({"role": "assistant", "content": full_response, "expanders": expanders})
+        st.session_state.pending_expanders = []
 
 def format_chat_history(chat_history: Optional[List[Dict[str, str]]] = None) -> str:
     """
@@ -101,7 +126,7 @@ def format_chat_history(chat_history: Optional[List[Dict[str, str]]] = None) -> 
     return formatted_history
 
 
-def display_debug_info(title, content):
+def display_debug_info(title, content, store: bool = True):
     """
     Displays debugging information in an expandable section.
 
@@ -114,6 +139,14 @@ def display_debug_info(title, content):
     """
     with st.expander(f"{title}", expanded=False):
         st.json(content)
+    if store and "pending_expanders" in st.session_state:
+        st.session_state.pending_expanders.append(
+            {
+                "type": "debug_info",
+                "title": title,
+                "content": content,
+            }
+        )
 def display_debug_info_final(title, content, download_opendap = False):
     """
     Displays debugging information in an expandable table format and collects

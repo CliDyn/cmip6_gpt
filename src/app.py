@@ -19,6 +19,8 @@ def init_session_state():
         st.session_state.opendap_states = {}
     if "expanded_models" not in st.session_state:
         st.session_state.expanded_models = set()  # Persist previous state
+    if "pending_expanders" not in st.session_state:
+        st.session_state.pending_expanders = []
 @st.cache_resource # Add any parameters here if the agent creation depends on them e.g. _model_name
 def get_cached_agent_executor():
     print("get_cached_agent_executor: Creating new agent executor instance...")
