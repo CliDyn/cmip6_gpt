@@ -105,9 +105,11 @@ def cmip6_data_process(query, facet_values, download_opendap = False) -> str:
 
             if "pending_expanders" in st.session_state:
                 st.session_state.pending_expanders.append({
+                    "type": "dataset_info",
                     "detailed_summary": detailed_summary,
                     "download_opendap": download_opendap,
-                    "query_for_python_code": query_for_python_code
+                    "query_for_python_code": query_for_python_code,
+
                 })
 
         return {
