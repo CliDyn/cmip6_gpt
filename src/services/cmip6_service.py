@@ -109,6 +109,7 @@ def cmip6_data_process(query, facet_values, download_opendap = False) -> str:
                     "detailed_summary": detailed_summary,
                     "download_opendap": download_opendap,
                     "query_for_python_code": query_for_python_code,
+
                 })
 
         return {

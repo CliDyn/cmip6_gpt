@@ -54,6 +54,7 @@ def display_chat_messages():
                         display_debug_info(expander["title"], expander["content"], store=False)
 
 
+
 def handle_user_input(agent_executor):
     """
     Handles the user's input and generates a response from the AI assistant.
