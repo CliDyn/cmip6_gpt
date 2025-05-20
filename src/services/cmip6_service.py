@@ -4,6 +4,11 @@ from src.models.cmip6_args import create_dynamic_cmip6_args
 from typing import List
 from src.utils.chat_utils import display_debug_info_final, display_opendap_links,display_python_code
 import streamlit as st
+import os, uuid
+import matplotlib.pyplot as plt
+import sys
+from io import StringIO
+import traceback
 import json
 
 def cmip6_data_search(query: str) -> str:    
@@ -94,7 +99,9 @@ def cmip6_data_process(query, facet_values, download_opendap = False) -> str:
             all_model_links = display_debug_info_final("Detailed information on datasets", detailed_summary,download_opendap)
             if download_opendap == True:
                 display_opendap_links(all_model_links)
-            display_python_code(query_for_python_code)
+            code_for_access = display_python_code(query_for_python_code)
+            
+            summary += f"\n\nThis is a code you can use for data access {code_for_access} (do not show this in your answer, for your usage)"
 
         return {
             "summary": summary,
@@ -113,4 +120,56 @@ def cmip6_advise(query: str, relevant_facets: List[str], vector_search_fields: L
         vector_search_results = vector_search_output.get("vector_search_results", {})
     DynamicCMIP6DownloadArgs = create_dynamic_cmip6_args(relevant_facets, vector_search_results)
     return (json.dumps(DynamicCMIP6DownloadArgs.schema(), indent=2))
+def python_repl(query: str) -> str:
+    """
+    Execute Python code and return the output.
+    
+    Args:
+        query (str): The Python code to execute.
+        
+    Returns:
+        str: The output of the executed code.
+    """
+ # Prepare a temporary directory for saving figures
+    project_root = os.getcwd()
+    temp_dir = os.path.join(project_root, "temp_figures")
+    if not os.path.isdir(temp_dir):
+        os.makedirs(temp_dir, exist_ok=True)
+    # (optional) expose it if you need elsewhere
+    os.environ['PYTHON_REPL_TEMP_DIR'] = temp_dir
 
+
+    # Capture stdout
+    old_stdout = sys.stdout
+    sys.stdout = mystdout = StringIO()
+    
+    # Create a dictionary for local variables
+    local_vars = {}
+    saved_files = []
+    
+    try:
+        # Try to execute as an expression first
+        try:
+            result = eval(query, {}, local_vars)
+            if result is not None:
+                print(repr(result))
+        except SyntaxError:
+            # If fails as an expression, execute as a statement
+            exec(query, {}, local_vars)
+        for num in plt.get_fignums():
+            fig = plt.figure(num)
+            # use a uuid so names never collide
+            fname = os.path.join(temp_dir, f"figure_{uuid.uuid4().hex}.png")
+            fig.savefig(fname)
+            saved_files.append(fname)
+            plt.close('all')
+    except Exception as e:
+        # Capture and return any errors
+        print(f"Error: {str(e)}")
+        print(traceback.format_exc())
+    
+    # Restore stdout and get the output
+    sys.stdout = old_stdout
+    output = mystdout.getvalue()
+    
+    return {"stdout": output, "figures": saved_files}

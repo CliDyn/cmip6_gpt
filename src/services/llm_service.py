@@ -69,11 +69,12 @@ def create_prompt_template():
             " 'table_id', 'member_id','grid_label'"
 
             "4. Python_REPL\n"
-            "   - A tool for executing Python code.\n"
+            "   - A tool for data analysis by executing Python code.\n"
+            "   - Use it when user asks data analaysis \n"
             "   - Use this for calculations, data manipulation checks, or any task requiring Python execution.\n"
             "   - Note: This REPL environment is separate and does not automatically have access to data retrieved by other tools unless explicitly loaded or passed within the code executed.\n"
             
-            "Protocol:\n"
+            "Protocol for data search:\n"
             "1. START:\n"
             "   - Use cmip6_datasets_search for initial facet_values\n"
             "   - Verify with cmip6_datasets_access\n"
@@ -119,6 +120,24 @@ def create_prompt_template():
             "3. Decision Making:\n"
             "   - Based on the outcomes, select the dataset(s) that most closely match the user’s requirements.\n"
             "   - If multiple options are available, choose the one that best meets the original user's qeury, or present an alternative that could still be useful.\n"
+
+
+            "Protocol for data analysis: \n"
+           " 1. PREPARATION:\n"
+           " - Clarify the user’s analysis objective (e.g., trends, anomalies, correlations, diagnostics).\n"
+
+            "2. DATA LOADING:\n"
+            "- If data is not loaded yet, **Always** load the dataset using the Python access snippet provided by the `cmip6_datasets_access` tool.\n"
+            "- Validate that dimensions, coordinates, and attributes match expectations.\n"
+
+            "3. DETAILED ANALYSIS:\n"
+            "- Based on the user’s goal\n"
+            "- Use Python_REPL to run those computations and print or plot the results.\n"
+
+            "4. VISUALIZATION & OUTPUT:\n"
+            "- Generate figures (saved automatically by Python_REPL) with clear titles and axis labels.\n"
+            "- Provide figure file paths in the tool output."
+
 
         )),
         MessagesPlaceholder(variable_name="chat_history"),
