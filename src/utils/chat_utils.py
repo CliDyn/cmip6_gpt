@@ -5,9 +5,124 @@ import os
 import re
 import json
 import requests
+import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
+class StreamlitPlotHandler:
+    """Helper class to handle plot display in Streamlit"""
+    
+    @staticmethod
+    def display_plots_from_result(result: Dict[str, Any]) -> bool:
+        """
+        Display plots from REPL result immediately in Streamlit.
+        Returns True if plots were displayed, False otherwise.
+        """
+        if not result:
+            return False
+            
+        plot_data = result.get("plot_data", [])
+        if not plot_data:
+            return False
+            
+        plots_displayed = False
+        for i, plot_data_item in enumerate(plot_data):
+            try:
+                # Handle both raw bytes and base64-encoded strings
+                if isinstance(plot_data_item, str):
+                    plot_bytes = base64.b64decode(plot_data_item)
+                else:
+                    plot_bytes = plot_data_item
+                
+                # Create a container for the plot
+                with st.container():
+                    # Display the plot with better formatting
+                    st.image(
+                        plot_bytes, 
+                        use_container_width=True, 
+                        caption=f"Plot {i+1}"
+                    )
+                    plots_displayed = True
+            except Exception as e:
+                st.error(f"Error displaying plot {i+1}: {str(e)}")
+            
+        return plots_displayed
+    
+    @staticmethod
+    def display_plots_from_files(file_paths: List[str]) -> bool:
+        """
+        Display plots from file paths.
+        Returns True if plots were displayed, False otherwise.
+        """
+        if not file_paths:
+            return False
+            
+        plots_displayed = False
+        for i, path in enumerate(file_paths):
+            try:
+                if os.path.exists(path):
+                    # Display each plot in its own container
+                    with st.container():
+                        st.image(
+                            path, 
+                            use_container_width=True, 
+                            caption=f"Plot {i+1} - {os.path.basename(path)}"
+                        )
+                        plots_displayed = True
+                else:
+                    st.warning(f"Plot file not found: {path}")
+            except Exception as e:
+                st.error(f"Error displaying plot {i+1} from file {path}: {str(e)}")
+                
+        return plots_displayed
 
-def parse_image_markdown(text: str) -> (str, Optional[str]):
+class OptimizedStreamlitPlotHandler:
+    """
+    Optimized plot handler for handling path-based plot storage.
+    This reduces token usage by storing plot paths instead of base64 data.
+    """
+    
+    @staticmethod
+    def display_plots_from_paths(file_paths: List[str]) -> bool:
+        """
+        Display plots from file paths with optimized handling.
+        Returns True if plots were displayed, False otherwise.
+        """
+        if not file_paths:
+            return False
+            
+        plots_displayed = False
+        for i, path in enumerate(file_paths):
+            try:
+                if os.path.exists(path):
+                    # Display each plot in its own container
+                    with st.container():
+                        st.image(
+                            path, 
+                            use_container_width=True, 
+                            caption=f"Generated Plot {i+1}"
+                        )
+                        plots_displayed = True
+                else:
+                    st.warning(f"Plot file not found: {path}")
+            except Exception as e:
+                st.error(f"Error displaying plot {i+1} from file {path}: {str(e)}")
+                
+        return plots_displayed
+    
+    @staticmethod
+    def cleanup_temp_plots(file_paths: List[str]) -> None:
+        """
+        Clean up temporary plot files to save disk space.
+        """
+        for path in file_paths:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                st.warning(f"Could not remove temporary file {path}: {str(e)}")
+
+def parse_image_markdown(text: str) -> tuple[str, Optional[str]]:
     """Extract image path from markdown and return cleaned text and absolute path."""
     match = re.search(r"!\[.*?\]\((.*?)\)", text)
     if match:
@@ -16,55 +131,87 @@ def parse_image_markdown(text: str) -> (str, Optional[str]):
         clean_text = re.sub(r"!\[.*?\]\(.*?\)", "", text).strip()
         return clean_text, full_path
     return text, None
+
 def display_chat_messages():
     """
-    Displays chat messages from the session state in a chat-like format.
-
-    This function iterates through the chat messages stored in the session state and displays each one 
-    according to its role (e.g., 'user', 'assistant') in a markdown format.
+    Enhanced version of display_chat_messages with optimized plot handling.
+    Supports both legacy plot_data and new figure_paths approach.
     """
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            if message["role"] == "user":
-                st.markdown(message["content"])
-            else:
-                try:
-                    clean, img = parse_image_markdown(message["content"])
-                    if img:
-                        col1, col2 = st.columns([1, 3])
-                        with col1:
-                            st.markdown(clean)
-                        with col2:
-                            st.image(img,use_container_width = True)
-                    else:
-                        st.markdown(clean)
-                except Exception:
+    try:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                if message["role"] == "user":
                     st.markdown(message["content"])
-                for expander in message.get("expanders", []):
-                    if expander.get("type") == "dataset_info":
-                        links_df = display_debug_info_final(
-                            "Detailed information on datasets",
-                            expander["detailed_summary"],
-                            expander["download_opendap"],
-                        )
-                        if expander["download_opendap"]:
-                            display_opendap_links(links_df)
-                        display_python_code(expander["query_for_python_code"])
-                    elif expander.get("type") == "debug_info":
-                        display_debug_info(expander["title"], expander["content"], store=False)
-
-
+                elif message["role"] == "tool":
+                    # Handle tool messages (from Python REPL)
+                    content = message.get("content", "")
+                    if content.strip():
+                        st.code(content, language="text")
+                    
+                    # Handle figure paths from tool messages
+                    if "figure_paths" in message and message["figure_paths"]:
+                        try:
+                            OptimizedStreamlitPlotHandler.display_plots_from_paths(message["figure_paths"])
+                        except Exception as e:
+                            st.error(f"Error displaying plots from tool message: {str(e)}")
+                    
+                    # Display errors if present
+                    if message.get("error"):
+                        st.error(message["error"])
+                        
+                else:
+                    # Handle assistant messages
+                    content = message.get("content", "")
+                    
+                    # Display text content if it exists
+                    if content and content.strip():
+                        st.markdown(content)
+                    
+                    # Handle legacy figures (backward compatibility)
+                    if "figures" in message and message["figures"]:
+                        try:
+                            StreamlitPlotHandler.display_plots_from_files(message["figures"])
+                        except Exception as e:
+                            st.error(f"Error displaying legacy figures: {str(e)}")
+                    
+                    # Handle new optimized figure paths
+                    if "figure_paths" in message and message["figure_paths"]:
+                        try:
+                            OptimizedStreamlitPlotHandler.display_plots_from_paths(message["figure_paths"])
+                        except Exception as e:
+                            st.error(f"Error displaying figure paths: {str(e)}")
+                    
+                    # Handle legacy plot data (backward compatibility)
+                    if "plot_data" in message and message["plot_data"]:
+                        try:
+                            StreamlitPlotHandler.display_plots_from_result({"plot_data": message["plot_data"]})
+                        except Exception as e:
+                            st.error(f"Error displaying legacy plot data: {str(e)}")
+                    
+                    # Handle expanders with better error handling
+                    for expander in message.get("expanders", []):
+                        try:
+                            if expander.get("type") == "dataset_info":
+                                links_df = display_debug_info_final(
+                                    "Detailed information on datasets",
+                                    expander["detailed_summary"],
+                                    expander.get("download_opendap", False),
+                                )
+                                if expander.get("download_opendap") and not links_df.empty:
+                                    display_opendap_links(links_df)
+                                display_python_code(expander["query_for_python_code"])
+                            elif expander.get("type") == "debug_info":
+                                display_debug_info(expander["title"], expander["content"], store=False)
+                        except Exception as e:
+                            st.error(f"Error displaying expander: {str(e)}")
+                            
+    except Exception as e:
+        st.error(f"Error displaying chat messages: {str(e)}")
 
 def handle_user_input(agent_executor):
     """
     Handles the user's input and generates a response from the AI assistant.
-
-    This function takes user input through the chat interface, appends it to the session history, and 
-    streams the AI's response using the provided `agent_executor`. The response is displayed in real time, 
-    and if the response contains a CMIP6 data request, it parses and displays both the summary and full result.
-
-    Args:
-        agent_executor: The agent responsible for processing the user's query and generating a response.
+    Updated to work with the optimized agent that uses path-based plot storage.
     """
     if user_input := st.chat_input("What would you like to know about climate data or CMIP6?"):
         st.session_state.messages.append({"role": "user", "content": user_input})
@@ -75,68 +222,106 @@ def handle_user_input(agent_executor):
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             full_response = ""
+            collected_plot_data = []
+            collected_figures: list[str] = []
+            collected_figure_paths: list[str] = []
+            
             try:
-                for chunk in agent_executor.stream({"input": user_input, "chat_history": st.session_state.messages}):
+                for chunk in agent_executor.stream(
+                    {"input": user_input, "chat_history": st.session_state.messages}
+                ):
+                    # Handle streamed text
                     if isinstance(chunk, dict) and "output" in chunk:
                         full_response += chunk["output"]
                         message_placeholder.markdown(full_response + "▌")
-                clean, img = parse_image_markdown(full_response)
-                if img:
-                    message_placeholder.empty()
-                    col1, col2 = st.columns([1, 3])
-                    with col1:
-                        st.markdown(clean)
-                    with col2:
-                        st.image(img,use_container_width = True)
-                else:
-                    message_placeholder.markdown(clean)
+
+                    # Handle legacy plot data (backward compatibility)
+                    if isinstance(chunk, dict) and "plot_data" in chunk:
+                        collected_plot_data.extend(chunk["plot_data"])
+                        StreamlitPlotHandler.display_plots_from_result({"plot_data": chunk["plot_data"]})
+
+                    # Handle legacy file-based figures (backward compatibility)
+                    if isinstance(chunk, dict) and "figures" in chunk and chunk["figures"]:
+                        collected_figures.extend(chunk["figures"])
+                        StreamlitPlotHandler.display_plots_from_files(chunk["figures"])
+                    
+                    # Handle new optimized figure paths
+                    if isinstance(chunk, dict) and "figure_paths" in chunk and chunk["figure_paths"]:
+                        collected_figure_paths.extend(chunk["figure_paths"])
+                        OptimizedStreamlitPlotHandler.display_plots_from_paths(chunk["figure_paths"])
+
+                # Clear the typing indicator
+                message_placeholder.markdown(full_response)
+
             except Exception as e:
                 error_message = f"An error occurred: {str(e)}\n\nPlease try rephrasing your query or contact support if the issue persists."
                 st.error(error_message)
                 full_response = error_message
+                message_placeholder.markdown(full_response)
 
-        # Add AI response to chat history
-        expanders = st.session_state.get("pending_expanders", [])
-        st.session_state.messages.append({"role": "assistant", "content": full_response, "expanders": expanders})
-        st.session_state.pending_expanders = []
+            # Add AI response to chat history with all possible plot formats
+            expanders = st.session_state.get("pending_expanders", [])
+            message_data = {
+                "role": "assistant",
+                "content": full_response,
+                "expanders": expanders,
+            }
+            
+            # Add plot data in appropriate format
+            if collected_plot_data:
+                message_data["plot_data"] = collected_plot_data
+            if collected_figures:
+                message_data["figures"] = collected_figures
+            if collected_figure_paths:
+                message_data["figure_paths"] = collected_figure_paths
+                
+            st.session_state.messages.append(message_data)
+            st.session_state.pending_expanders = []
 
 def format_chat_history(chat_history: Optional[List[Dict[str, str]]] = None) -> str:
     """
     Formats the chat history into a readable string for use in prompts or logs.
-
-    This function takes the chat history (or retrieves it from the session state if not provided) and 
-    formats it by labeling each message with either 'User' or 'Assistant', followed by the content of 
-    the message.
-
-    Args:
-        chat_history (Optional[List[Dict[str, str]]]): A list of dictionaries representing the chat history. 
-        If not provided, it retrieves the messages from session state.
-
-    Returns:
-        str: A formatted string representing the chat history, with each message labeled by role.
+    Updated to handle tool messages and figure paths.
     """
     if chat_history is None:
         chat_history = st.session_state.get('messages', [])
     formatted_history = ""
+    
     for message in chat_history:
-        role = "User" if message["role"] == "user" else "Assistant"
-        content = message["content"]
-        if content == None:
-            content = 'python_repl: ' + message['tool_calls']
-        formatted_history += f"{role}: {content}\n"
+        role = message["role"]
+        if role == "user":
+            role_label = "User"
+        elif role == "assistant":
+            role_label = "Assistant"
+        elif role == "tool":
+            role_label = "Tool"
+        else:
+            role_label = role.capitalize()
+            
+        content = message.get("content", "")
+        if content is None:
+            if "tool_calls" in message:
+                content = f'Tool calls: {message["tool_calls"]}'
+            elif message.get("role") == "tool":
+                content = "Tool execution result"
+            else:
+                content = "No content"
+                
+        formatted_history += f"{role_label}: {content}\n"
+        
+        # Add information about plots if present
+        if message.get("figure_paths"):
+            formatted_history += f"  [Generated {len(message['figure_paths'])} plot(s)]\n"
+        elif message.get("figures"):
+            formatted_history += f"  [Generated {len(message['figures'])} figure(s)]\n"
+        elif message.get("plot_data"):
+            formatted_history += f"  [Generated {len(message['plot_data'])} plot(s)]\n"
+            
     return formatted_history
-
 
 def display_debug_info(title, content, store: bool = True):
     """
     Displays debugging information in an expandable section.
-
-    This function creates an expandable section in the UI, titled with the given `title`, and displays 
-    the provided `content` as a JSON object for debugging purposes.
-
-    Args:
-        title (str): The title for the expandable section.
-        content (Any): The content to display inside the expandable section, formatted as JSON.
     """
     with st.expander(f"{title}", expanded=False):
         st.json(content)
@@ -148,29 +333,28 @@ def display_debug_info(title, content, store: bool = True):
                 "content": content,
             }
         )
-def display_debug_info_final(title, content, download_opendap = False):
+
+def display_debug_info_final(title, content, download_opendap=False):
     """
     Displays debugging information in an expandable table format and collects
     all OpenDAP links across models.
-    
-    Args:
-        title (str): The title for the expandable section
-        content (str): The JSON content to display
-        
-    Returns:
-        list: All collected OpenDAP links with model information when title is "Final Facet Values"
     """
-    data = json.loads(content)
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        st.error(f"Error parsing JSON content: {e}")
+        return pd.DataFrame()
+        
     all_model_links = []
     
     with st.expander(f"{title}", expanded=False):
-        st.write(f"Total datasets found: {data['hit_count']}")
+        st.write(f"Total datasets found: {data.get('hit_count', 0)}")
         
         # Initialize session state for OpenDAP links if not exists
         if 'opendap_links' not in st.session_state:
             st.session_state.opendap_links = {}
             
-        for model_name, model_data in data['models'].items():
+        for model_name, model_data in data.get('models', {}).items():
             st.write(f"### {model_name}")
             
             # Create tabs for each model
@@ -178,19 +362,20 @@ def display_debug_info_final(title, content, download_opendap = False):
             if download_opendap:
                 tab_titles.append("OpenDAP Links")
             tabs = st.tabs(tab_titles)
+            
             with tabs[0]: 
                 # Create DataFrame for the model's parameters
                 model_rows = []
                 model_rows.append({
                     'Parameter': 'Total Datasets',
-                    'Values': str(model_data['dataset_count']),
+                    'Values': str(model_data.get('dataset_count', 0)),
                     'Details': ''
                 })
                 
                 for param, values in model_data.items():
-                    if param != 'dataset_count':
+                    if param != 'dataset_count' and isinstance(values, dict):
                         value_str = ', '.join([f"{k}: {v}" for k, v in values.items()])
-                        total_count = sum(values.values())
+                        total_count = sum(values.values()) if values else 0
                         model_rows.append({
                             'Parameter': param,
                             'Values': f"Total: {total_count}",
@@ -207,13 +392,9 @@ def display_debug_info_final(title, content, download_opendap = False):
                     },
                     hide_index=True
                 )
+                
             if download_opendap and len(tabs) > 1:
                 with tabs[1]:  # OpenDAP Links tab
-                    # RESET SESSION STATE FOR THIS MODEL (FOR TESTING)
-                    # Uncomment to force refresh data when testing
-                    # if model_name in st.session_state.opendap_links:
-                    #     del st.session_state.opendap_links[model_name]
-                
                     if model_name not in st.session_state.opendap_links:
                         # Extract all parameters with multiple values
                         multi_value_parameters = {}
@@ -224,7 +405,7 @@ def display_debug_info_final(title, content, download_opendap = False):
                         
                         # Extract all parameter values and track those with multiple values
                         for param, values in model_data.items():
-                            if param != 'dataset_count' and values:
+                            if param != 'dataset_count' and values and isinstance(values, dict):
                                 value_list = list(values.keys())
                                 parameter_values[param] = value_list
                                 if len(value_list) > 1:
@@ -244,55 +425,49 @@ def display_debug_info_final(title, content, download_opendap = False):
                                 current_combo[param_name] = value
                                 generate_combinations(params, current_index + 1, current_combo)
                         
-                        generate_combinations(parameter_values, 0, {})
+                        if parameter_values:
+                            generate_combinations(parameter_values, 0, {})
                         
                         # Preferred nodes in order of priority
                         preferred_nodes = ["aims3.llnl.gov", "esgf-data1.llnl.gov", "esgf-data2.llnl.gov"]
                         
-                        # Dictionary to organize links by unique ID (combination of filename and parameters)
-                        # This ensures we don't overwrite different parameter combinations with same filename
+                        # Dictionary to organize links by unique ID
                         all_results = []
                         
                         # Fetch OpenDAP links for each parameter combination
-                        with st.spinner(f"Fetching OpenDAP links for {model_name}..."):
-                            for combination_idx, combination in enumerate(param_combinations):
-                                try:
-                                    # Call esgf_search with the current combination of parameters
-                                    all_links = esgf_search(**combination)
-                                    
-                                    # Process each link
-                                    for link in all_links:
-                                        try:
-                                            # Extract filename (last part of URL)
-                                            filename = link.split('/')[-1]
-                                            
-                                            # Extract node from URL
-                                            url_parts = link.split('/')
-                                            node = url_parts[2] if len(url_parts) > 3 else "unknown"
-                                            
-                                            # Create a unique ID that includes relevant parameter values
-                                            # This ensures we don't overwrite results with different parameters
-                                            param_id_parts = []
-                                            for param in multi_value_parameters:
-                                                if param in combination:
-                                                    param_id_parts.append(f"{param}={combination[param]}")
-                                            
-                                            # Include parameter values in the result
-                                            result_entry = {
-                                                'filename': filename,
-                                                'node': node,
-                                                'url': link,
-                                                'params': combination.copy()  # Store all parameters
-                                            }
-                                            
-                                            # Add to results array
-                                            all_results.append(result_entry)
-                                            
-                                        except Exception as e:
-                                            st.warning(f"Error processing link {link}: {e}")
-                                    
-                                except Exception as e:
-                                    st.error(f"Error fetching OpenDAP links for combination {combination}: {e}")
+                        if param_combinations:
+                            with st.spinner(f"Fetching OpenDAP links for {model_name}..."):
+                                for combination_idx, combination in enumerate(param_combinations):
+                                    try:
+                                        # Call esgf_search with the current combination of parameters
+                                        all_links = esgf_search(**combination)
+                                        
+                                        # Process each link
+                                        for link in all_links:
+                                            try:
+                                                # Extract filename (last part of URL)
+                                                filename = link.split('/')[-1]
+                                                
+                                                # Extract node from URL
+                                                url_parts = link.split('/')
+                                                node = url_parts[2] if len(url_parts) > 3 else "unknown"
+                                                
+                                                # Include parameter values in the result
+                                                result_entry = {
+                                                    'filename': filename,
+                                                    'node': node,
+                                                    'url': link,
+                                                    'params': combination.copy()  # Store all parameters
+                                                }
+                                                
+                                                # Add to results array
+                                                all_results.append(result_entry)
+                                                
+                                            except Exception as e:
+                                                st.warning(f"Error processing link {link}: {e}")
+                                        
+                                    except Exception as e:
+                                        st.error(f"Error fetching OpenDAP links for combination {combination}: {e}")
                         
                         # Apply node preferences - group by unique combination of filename and parameters
                         final_results = {}
@@ -437,23 +612,15 @@ def display_debug_info_final(title, content, download_opendap = False):
                         
                     else:
                         st.write("No OpenDAP links available for this model.")
-                        # Return all collected links
-                    return pd.DataFrame(all_model_links)
             
             st.write("---")
-    # Return empty list for other titles
-    return all_model_links
+    
+    # Return DataFrame of all collected links
+    return pd.DataFrame(all_model_links)
 
 def display_opendap_links(df: pd.DataFrame) -> None:
     """
     Display a pandas DataFrame containing unique OpenDAP links in Streamlit.
-    
-    Args:
-        df (pd.DataFrame): DataFrame containing the data to display
-        link_column (str): Name of the column containing the links (default: 'Link')
-        
-    Returns:
-        None
     """
     link_column = 'url'
     # Remove duplicate links
@@ -478,39 +645,57 @@ def display_opendap_links(df: pd.DataFrame) -> None:
     
     # Display stats
     st.write(f"Total number of links: {unique_count}")
+
 def display_python_code(query):
+    """Display Python code for accessing CMIP6 data from Google Cloud Storage."""
     code = f"""
-    import pandas as pd
-    import xarray as xr
-    # Load the metadata CSV
-    df = pd.read_csv('https://storage.googleapis.com/cmip6/cmip6-zarr-consolidated-stores.csv')
-    # Filter the dataframe
-    df_spec = df.query("{query}")
-    # get the path to a specific zarr store (the first one from the dataframe above)
-    zstore = df_spec.zstore.values[-1]
-    # Open the first dataset
-    ds = xr.open_zarr(zstore, consolidated=True, storage_options={{'token':'anon'}})"""
-    with st.expander("Python access from Google Cloude Storage", expanded=False):
+import pandas as pd
+import xarray as xr
+# Load the metadata CSV
+df = pd.read_csv('https://storage.googleapis.com/cmip6/cmip6-zarr-consolidated-stores.csv')
+# Filter the dataframe
+df_spec = df.query("{query}")
+# get the path to a specific zarr store (the first one from the dataframe above)
+zstore = df_spec.zstore.values[-1]
+# Open the first dataset
+ds = xr.open_zarr(zstore, consolidated=True, storage_options={{'token':'anon'}})"""
+    
+    with st.expander("Python access from Google Cloud Storage", expanded=False):
         st.header("CMIP6 Data Access Code") 
         st.write("This code loads climate model data from Google Cloud Storage using Zarr format.")
         st.code(code, language='python')
     return code
 
-
+# ESGF Search Function
 # Author: Unknown
-# I got the original version from a word document published by ESGF
+# Original version from ESGF documentation
 # https://docs.google.com/document/d/1pxz1Kd3JHfFp8vR2JCVBfApbsHmbUQQstifhGNdc6U0/edit?usp=sharing
-
 # API AT: https://github.com/ESGF/esgf.github.io/wiki/ESGF_Search_REST_API#results-pagination
 
 def esgf_search(server="https://esgf-node.llnl.gov/esg-search/search",
                 files_type="OPENDAP", local_node=True, project="CMIP6",
                 verbose=False, format="application%2Fsolr%2Bjson",
                 use_csrf=False, **search):
+    """
+    Search for CMIP6 data files using the ESGF API.
+    
+    Args:
+        server: ESGF search server URL
+        files_type: Type of files to search for (default: "OPENDAP")
+        local_node: Whether to search only local node (default: True)
+        project: Project name (default: "CMIP6")
+        verbose: Whether to print verbose output (default: False)
+        format: Response format (default: "application%2Fsolr%2Bjson")
+        use_csrf: Whether to use CSRF token (default: False)
+        **search: Additional search parameters
+        
+    Returns:
+        List of sorted file URLs
+    """
     client = requests.session()
     payload = search
     payload["project"] = project
-    payload["type"]= "File"
+    payload["type"] = "File"
     if local_node:
         payload["distrib"] = "false"
     if use_csrf:
@@ -529,6 +714,7 @@ def esgf_search(server="https://esgf-node.llnl.gov/esg-search/search",
     numFound = 10000
     all_files = []
     files_type = files_type.upper()
+    
     while offset < numFound:
         payload["offset"] = offset
         url_keys = [] 
@@ -536,20 +722,32 @@ def esgf_search(server="https://esgf-node.llnl.gov/esg-search/search",
             url_keys += ["{}={}".format(k, payload[k])]
 
         url = "{}/?{}".format(server, "&".join(url_keys))
-        print(url)
-        r = client.get(url)
-        r.raise_for_status()
-        resp = r.json()["response"]
-        numFound = int(resp["numFound"])
-        resp = resp["docs"]
-        offset += len(resp)
-        for d in resp:
-            if verbose:
-                for k in d:
-                    print("{}: {}".format(k,d[k]))
-            url = d["url"]
-            for f in d["url"]:
-                sp = f.split("|")
-                if sp[-1] == files_type:
-                    all_files.append(sp[0].split(".html")[0])
+        if verbose:
+            print(url)
+            
+        try:
+            r = client.get(url)
+            r.raise_for_status()
+            resp = r.json()["response"]
+            numFound = int(resp["numFound"])
+            resp = resp["docs"]
+            offset += len(resp)
+            
+            for d in resp:
+                if verbose:
+                    for k in d:
+                        print("{}: {}".format(k, d[k]))
+                url_list = d.get("url", [])
+                for f in url_list:
+                    sp = f.split("|")
+                    if len(sp) > 1 and sp[-1] == files_type:
+                        all_files.append(sp[0].split(".html")[0])
+                        
+        except requests.exceptions.RequestException as e:
+            st.error(f"Error fetching data from ESGF: {e}")
+            break
+        except (KeyError, json.JSONDecodeError) as e:
+            st.error(f"Error parsing response from ESGF: {e}")
+            break
+            
     return sorted(all_files)

@@ -1,6 +1,6 @@
 import os
 class Config:
-    model_name: str = "gpt-4o"  # Default model
+    model_name: str = "o3"  # Default model
     @classmethod
     def set_model_name(cls, model_name: str):
         cls.model_name = model_name

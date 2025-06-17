@@ -186,7 +186,7 @@ def select_facets(query: str) -> Dict[str, Any]:
     print(f"\n--- SELECTING FACETS FOR QUERY: {query} ---")
     chat_history = st.session_state.get('messages', [])
     # formatted_history = format_chat_history(chat_history)
-    llm = create_llm(temperature=0)
+    llm = create_llm(temperature=1)
     prompt = f"""
     Based on the following user query about CMIP6 data, determine which facets are relevant for the search.
     User query: {query}
@@ -246,7 +246,7 @@ def select_facets(query: str) -> Dict[str, Any]:
         }
 def download_opendap_or_not(query):
     chat_history = st.session_state.get('messages', [])
-    llm = create_llm(temperature=0)
+    llm = create_llm(temperature=1)
     formatted_history = format_chat_history(chat_history)
     prompt = f"""
     Based on the following user query {query} and conversation history {formatted_history}, determine whether downloading OpenDAP links is required.
@@ -299,7 +299,7 @@ def select_facet_values(query: str, relevant_facets: List[str], dynamic_args_cla
     """
     chat_history = st.session_state.get('messages', [])
     formatted_history = format_chat_history(chat_history)
-    llm = create_llm(temperature=0)
+    llm = create_llm(temperature=1)
 
     prompt = f"""
     Based on the following user query about CMIP6 data and the relevant facets, determine appropriate values for each facet.

@@ -158,7 +158,7 @@ def perform_vector_search(query: str, vector_search_fields: List[str]) -> Dict[s
     print(f"\n--- VECTOR SIMILARITY SEARCH ---")
     print(f"Original Query: '{query}', Fields: {vector_search_fields}")
     split_query_template = create_split_query_template()
-    llm = create_llm(temperature=0)
+    llm = create_llm(temperature=1)
     split_chain = LLMChain(llm=llm, prompt=split_query_template)
 
     builder = StateGraph(State)

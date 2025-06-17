@@ -4,6 +4,7 @@
 .streamlit/secrets.toml
 .streamlit/
 temp_figures/
+figures/
 test.ipynb
 __pycache__
 src/__pycache__
