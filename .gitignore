@@ -1,4 +1,5 @@
 .venv/
+.env
 .cmip_env
 # Streamlit static files and secrets
 .streamlit/secrets.toml

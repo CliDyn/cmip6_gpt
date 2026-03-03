@@ -1,5 +1,6 @@
-from langchain.pydantic_v1 import BaseModel, Field, create_model
+from pydantic import BaseModel, Field, create_model
 from typing import Optional, Literal, List, Dict
+from src.config import Config
 import json
 import re
 class CMIP6DownloadArgs(BaseModel):
@@ -81,120 +82,177 @@ class CMIP6DownloadArgs(BaseModel):
     "MPI-M","MRI","NASA-GISS","NASA-GSFC","NCAR","NCC","NERC","NIMS-KMA","NIWA","NOAA-GFDL",
     "NTU","NUIST","PCMDI","PNNL-WACCEM","RTE-RRTMGP-Consortium","RUBISCO","SNU","THU",
     "UA","UCI","UCSB","UHH"
-]] = Field(default=None, description="Institution identifier for the CMIP6 project", enum_descriptions={
-        "AER":"Research and Climate Group, Atmospheric and Environmental Research, 131 Hartwell Avenue, Lexington, MA 02421, USA",
-        "AS-RCEC":"Research Center for Environmental Changes, Academia Sinica, Nankang, Taipei 11529, Taiwan",
-        "AWI":"Alfred Wegener Institute, Helmholtz Centre for Polar and Marine Research, Am Handelshafen 12, 27570 Bremerhaven, Germany",
-        "BCC":"Beijing Climate Center, Beijing 100081, China",
-        "CAMS":"Chinese Academy of Meteorological Sciences, Beijing 100081, China",
-        "CAS":"Chinese Academy of Sciences, Beijing 100029, China",
-        "CCCR-IITM":"Centre for Climate Change Research, Indian Institute of Tropical Meteorology Pune, Maharashtra 411 008, India",
-        "CCCma":"Canadian Centre for Climate Modelling and Analysis, Environment and Climate Change Canada, Victoria, BC V8P 5C2, Canada",
-        "CMCC":"Fondazione Centro Euro-Mediterraneo sui Cambiamenti Climatici, Lecce 73100, Italy",
-        "CNRM-CERFACS":"CNRM (Centre National de Recherches Meteorologiques, Toulouse 31057, France), CERFACS (Centre Europeen de Recherche et de Formation Avancee en Calcul Scientifique, Toulouse 31057, France)",
-        "CSIRO":"Commonwealth Scientific and Industrial Research Organisation, Aspendale, Victoria 3195, Australia",
-        "CSIRO-ARCCSS":"CSIRO (Commonwealth Scientific and Industrial Research Organisation, Aspendale, Victoria 3195, Australia), ARCCSS (Australian Research Council Centre of Excellence for Climate System Science). Mailing address: CSIRO, c/o Simon J. Marsland, 107-121 Station Street, Aspendale, Victoria 3195, Australia",
-        "CSIRO-COSIMA":"CSIRO (Commonwealth Scientific and Industrial Research Organisation, Australia), COSIMA (Consortium for Ocean-Sea Ice Modelling in Australia). Mailing address: CSIRO, c/o Simon J. Marsland, 107-121 Station Street, Aspendale, Victoria 3195, Australia",
-        "DKRZ":"Deutsches Klimarechenzentrum, Hamburg 20146, Germany",
-        "DWD":"Deutscher Wetterdienst, Offenbach am Main 63067, Germany",
-        "E3SM-Project":"LLNL (Lawrence Livermore National Laboratory, Livermore, CA 94550, USA); ANL (Argonne National Laboratory, Argonne, IL 60439, USA); BNL (Brookhaven National Laboratory, Upton, NY 11973, USA); LANL (Los Alamos National Laboratory, Los Alamos, NM 87545, USA); LBNL (Lawrence Berkeley National Laboratory, Berkeley, CA 94720, USA); ORNL (Oak Ridge National Laboratory, Oak Ridge, TN 37831, USA); PNNL (Pacific Northwest National Laboratory, Richland, WA 99352, USA); SNL (Sandia National Laboratories, Albuquerque, NM 87185, USA). Mailing address: LLNL Climate Program, c/o David C. Bader, Principal Investigator, L-103, 7000 East Avenue, Livermore, CA 94550, USA",
-        "EC-Earth-Consortium":"AEMET, Spain; BSC, Spain; CNR-ISAC, Italy; DMI, Denmark; ENEA, Italy; FMI, Finland; Geomar, Germany; ICHEC, Ireland; ICTP, Italy; IDL, Portugal; IMAU, The Netherlands; IPMA, Portugal; KIT, Karlsruhe, Germany; KNMI, The Netherlands; Lund University, Sweden; Met Eireann, Ireland; NLeSC, The Netherlands; NTNU, Norway; Oxford University, UK; surfSARA, The Netherlands; SMHI, Sweden; Stockholm University, Sweden; Unite ASTR, Belgium; University College Dublin, Ireland; University of Bergen, Norway; University of Copenhagen, Denmark; University of Helsinki, Finland; University of Santiago de Compostela, Spain; Uppsala University, Sweden; Utrecht University, The Netherlands; Vrije Universiteit Amsterdam, the Netherlands; Wageningen University, The Netherlands. Mailing address: EC-Earth consortium, Rossby Center, Swedish Meteorological and Hydrological Institute/SMHI, SE-601 76 Norrkoping, Sweden",
-        "ECMWF":"European Centre for Medium-Range Weather Forecasts, Reading RG2 9AX, UK",
-        "FIO-QLNM":"FIO (First Institute of Oceanography, Ministry of Natural Resources, Qingdao 266061, China), QNLM (Qingdao National Laboratory for Marine Science and Technology, Qingdao 266237, China)",
-        "HAMMOZ-Consortium":"ETH Zurich, Switzerland; Max Planck Institut fur Meteorologie, Germany; Forschungszentrum Julich, Germany; University of Oxford, UK; Finnish Meteorological Institute, Finland; Leibniz Institute for Tropospheric Research, Germany; Center for Climate Systems Modeling (C2SM) at ETH Zurich, Switzerland",
-        "INM":"Institute for Numerical Mathematics, Russian Academy of Science, Moscow 119991, Russia",
-        "IPSL":"Institut Pierre Simon Laplace, Paris 75252, France",
-        "KIOST":"Korea Institute of Ocean Science and Technology, Busan 49111, Republic of Korea",
-        "LLNL":"Lawrence Livermore National Laboratory, Livermore, CA 94550, USA. Mailing address: LLNL Climate Program, c/o Stephen A. Klein, Principal Investigator, L-103, 7000 East Avenue, Livermore, CA 94550, USA",
-        "MESSy-Consortium":"The Modular Earth Submodel System (MESSy) Consortium, represented by the Institute for Physics of the Atmosphere, Deutsches Zentrum fur Luft- und Raumfahrt (DLR), Wessling, Bavaria 82234, Germany",
-        "MIROC":"JAMSTEC (Japan Agency for Marine-Earth Science and Technology, Kanagawa 236-0001, Japan), AORI (Atmosphere and Ocean Research Institute, The University of Tokyo, Chiba 277-8564, Japan), NIES (National Institute for Environmental Studies, Ibaraki 305-8506, Japan), and R-CCS (RIKEN Center for Computational Science, Hyogo 650-0047, Japan)",
-        "MOHC":"Met Office Hadley Centre, Fitzroy Road, Exeter, Devon, EX1 3PB, UK",
-        "MPI-M":"Max Planck Institute for Meteorology, Hamburg 20146, Germany",
-        "MRI":"Meteorological Research Institute, Tsukuba, Ibaraki 305-0052, Japan",
-        "NASA-GISS":"Goddard Institute for Space Studies, New York, NY 10025, USA",
-        "NASA-GSFC":"NASA Goddard Space Flight Center, Greenbelt, MD 20771, USA",
-        "NCAR":"National Center for Atmospheric Research, Climate and Global Dynamics Laboratory, 1850 Table Mesa Drive, Boulder, CO 80305, USA",
-        "NCC":"NorESM Climate modeling Consortium consisting of CICERO (Center for International Climate and Environmental Research, Oslo 0349), MET-Norway (Norwegian Meteorological Institute, Oslo 0313), NERSC (Nansen Environmental and Remote Sensing Center, Bergen 5006), NILU (Norwegian Institute for Air Research, Kjeller 2027), UiB (University of Bergen, Bergen 5007), UiO (University of Oslo, Oslo 0313) and UNI (Uni Research, Bergen 5008), Norway. Mailing address: NCC, c/o MET-Norway, Henrik Mohns plass 1, Oslo 0313, Norway",
-        "NERC":"Natural Environment Research Council, STFC-RAL, Harwell, Oxford, OX11 0QX, UK",
-        "NIMS-KMA":"National Institute of Meteorological Sciences/Korea Meteorological Administration, Climate Research Division, Seoho-bukro 33, Seogwipo-si, Jejudo 63568, Republic of Korea",
-        "NIWA":"National Institute of Water and Atmospheric Research, Hataitai, Wellington 6021, New Zealand",
-        "NOAA-GFDL":"National Oceanic and Atmospheric Administration, Geophysical Fluid Dynamics Laboratory, Princeton, NJ 08540, USA",
-        "NTU":"National Taiwan University, Taipei 10650, Taiwan",
-        "NUIST":"Nanjing University of Information Science and Technology, Nanjing, 210044, China",
-        "PCMDI":"Program for Climate Model Diagnosis and Intercomparison, Lawrence Livermore National Laboratory, Livermore, CA 94550, USA",
-        "PNNL-WACCEM":"PNNL (Pacific Northwest National Laboratory), Richland, WA 99352, USA",
-        "RTE-RRTMGP-Consortium":"AER (Atmospheric and Environmental Research, Lexington, MA 02421, USA); UColorado (University of Colorado, Boulder, CO 80309, USA). Mailing address: AER c/o Eli Mlawer, 131 Hartwell Avenue, Lexington, MA 02421, USA",
-        "RUBISCO":"ORNL (Oak Ridge National Laboratory, Oak Ridge, TN 37831, USA); ANL (Argonne National Laboratory, Argonne, IL 60439, USA); BNL (Brookhaven National Laboratory, Upton, NY 11973, USA); LANL (Los Alamos National Laboratory, Los Alamos, NM 87545); LBNL (Lawrence Berkeley National Laboratory, Berkeley, CA 94720, USA); NAU (Northern Arizona University, Flagstaff, AZ 86011, USA); NCAR (National Center for Atmospheric Research, Boulder, CO 80305, USA); UCI (University of California Irvine, Irvine, CA 92697, USA); UM (University of Michigan, Ann Arbor, MI 48109, USA). Mailing address: ORNL Climate Change Science Institute, c/o Forrest M. Hoffman, Laboratory Research Manager, Building 4500N Room F106, 1 Bethel Valley Road, Oak Ridge, TN 37831-6301, USA",
-        "SNU":"Seoul National University, Seoul 08826, Republic of Korea",
-        "THU":"Department of Earth System Science, Tsinghua University, Beijing 100084, China",
-        "UA":"Department of Geosciences, University of Arizona, Tucson, AZ 85721, USA",
-        "UCI":"Department of Earth System Science, University of California Irvine, Irvine, CA 92697, USA",
-        "UCSB":"Bren School of Environmental Science and Management, University of California, Santa Barbara. Mailing address: c/o Samantha Stevenson, 2400 Bren Hall, University of California Santa Barbara, Santa Barbara, CA 93106, USA",
-        "UHH":"Universitat Hamburg, Hamburg 20148, Germany"
+    ]] = Field(default=None, description="Institution identifier for the CMIP6 project", enum_descriptions={
+        "AER": "Atmospheric and Environmental Research, USA",
+        "AS-RCEC": "Academia Sinica, Taiwan",
+        "AWI": "Alfred Wegener Institute, Germany",
+        "BCC": "Beijing Climate Center, China",
+        "CAMS": "Chinese Academy of Meteorological Sciences",
+        "CAS": "Chinese Academy of Sciences",
+        "CCCR-IITM": "Indian Institute of Tropical Meteorology",
+        "CCCma": "Canadian Centre for Climate Modelling and Analysis",
+        "CMCC": "Centro Euro-Mediterraneo sui Cambiamenti Climatici, Italy",
+        "CNRM-CERFACS": "CNRM and CERFACS, France",
+        "CSIRO": "CSIRO, Australia",
+        "CSIRO-ARCCSS": "CSIRO and ARC Centre of Excellence, Australia",
+        "CSIRO-COSIMA": "CSIRO and COSIMA, Australia",
+        "DKRZ": "Deutsches Klimarechenzentrum, Germany",
+        "DWD": "Deutscher Wetterdienst, Germany",
+        "E3SM-Project": "DOE E3SM multi-lab consortium, USA",
+        "EC-Earth-Consortium": "EC-Earth European consortium",
+        "ECMWF": "European Centre for Medium-Range Weather Forecasts, UK",
+        "FIO-QLNM": "First Institute of Oceanography, China",
+        "HAMMOZ-Consortium": "HAMMOZ European consortium",
+        "INM": "Institute for Numerical Mathematics, Russia",
+        "IPSL": "Institut Pierre Simon Laplace, France",
+        "KIOST": "Korea Institute of Ocean Science and Technology",
+        "LLNL": "Lawrence Livermore National Laboratory, USA",
+        "MESSy-Consortium": "MESSy/DLR consortium, Germany",
+        "MIROC": "JAMSTEC/AORI/NIES/R-CCS consortium, Japan",
+        "MOHC": "Met Office Hadley Centre, UK",
+        "MPI-M": "Max Planck Institute for Meteorology, Germany",
+        "MRI": "Meteorological Research Institute, Japan",
+        "NASA-GISS": "NASA Goddard Institute for Space Studies, USA",
+        "NASA-GSFC": "NASA Goddard Space Flight Center, USA",
+        "NCAR": "National Center for Atmospheric Research, USA",
+        "NCC": "NorESM Climate modeling Consortium, Norway",
+        "NERC": "Natural Environment Research Council, UK",
+        "NIMS-KMA": "National Institute of Meteorological Sciences, Korea",
+        "NIWA": "National Institute of Water and Atmospheric Research, NZ",
+        "NOAA-GFDL": "NOAA Geophysical Fluid Dynamics Laboratory, USA",
+        "NTU": "National Taiwan University",
+        "NUIST": "Nanjing University of Information Science, China",
+        "PCMDI": "Program for Climate Model Diagnosis, LLNL, USA",
+        "PNNL-WACCEM": "Pacific Northwest National Laboratory, USA",
+        "RTE-RRTMGP-Consortium": "AER and University of Colorado, USA",
+        "RUBISCO": "ORNL multi-lab consortium, USA",
+        "SNU": "Seoul National University, Korea",
+        "THU": "Tsinghua University, China",
+        "UA": "University of Arizona, USA",
+        "UCI": "University of California Irvine, USA",
+        "UCSB": "University of California Santa Barbara, USA",
+        "UHH": "Universität Hamburg, Germany"
     })
 
 # Define the dynamic CMIP6DownloadArgs creation function
-def create_dynamic_cmip6_args(relevant_facets: List[str], vector_search_results: Dict[str, List] = None):
+def create_dynamic_cmip6_args(
+    relevant_facets: List[str],
+    vector_search_results: Dict[str, List] = None,
+    score_threshold: float = None,
+    max_candidates: int = None
+):
     """
     Dynamically creates a schema for CMIP6 download arguments based on relevant facets and vector search results.
 
     This function processes the relevant facets from a CMIP6 query and, if vector search results are available, 
     incorporates the top matches for specific facets (e.g., source_id, variable_id, experiment_id). 
+    Low-relevance candidates are filtered out using a score threshold (ChromaDB L2 distance: lower = better).
     For each facet, it either uses default fields from the CMIP6 schema or dynamically generates options 
     based on search results, including descriptions.
+
+    Each dynamic Literal includes an "UNMATCHED" escape value so the LLM can indicate that none of the
+    RAG candidates match the user's intent, preventing forced hallucination.
 
     Args:
         relevant_facets (List[str]): List of facets relevant to the CMIP6 query.
         vector_search_results (Dict[str, List], optional): Vector search results containing relevant data for facets.
+        score_threshold (float): Maximum L2 distance to accept a RAG candidate (default from config).
+            Lower values are stricter. Tuned for gemini-embedding-001.
+        max_candidates (int): Maximum number of candidates to include in the dynamic schema (default from config).
 
     Returns:
         DynamicCMIP6DownloadArgs: A dynamically generated model schema for CMIP6 download arguments.
     """
+    MIN_CANDIDATES = 3  # Adaptive fallback: always keep at least this many
+
+    # Resolve defaults from config
+    if score_threshold is None:
+        score_threshold = Config.get_rag_score_threshold()
+    if max_candidates is None:
+        max_candidates = Config.get_rag_max_candidates()
+
     print("\n--- CREATING DYNAMIC CMIP6 DOWNLOAD ARGS ---")
     print(f"Relevant facets: {relevant_facets}")
+    print(f"Score threshold: {score_threshold}, Max candidates: {max_candidates}")
     print(f"Vector search results available: {bool(vector_search_results)}")
     print(f"Vector search results keys: {vector_search_results.keys() if vector_search_results else None}")
 
     dynamic_fields = {}
     for facet in relevant_facets:
         print(f"\nProcessing facet: {facet}")
+        # Skip facets not defined in the base schema
+        if facet not in CMIP6DownloadArgs.model_fields and facet not in ["source_id", "variable_id", "experiment_id"]:
+            print(f"  ⚠ Skipping unknown facet: {facet}")
+            continue
         if facet in ["source_id", "variable_id", "experiment_id"] and vector_search_results and facet in vector_search_results:
-            top_10 = []
+            # --- Score filtering: keep only relevant candidates ---
+            raw_results = vector_search_results[facet]
+            # Sort by score ascending (lower distance = more relevant)
+            sorted_results = sorted(raw_results, key=lambda r: r.get('score', float('inf')))
+
+            # Apply threshold filter
+            filtered = [r for r in sorted_results if r.get('score', float('inf')) <= score_threshold]
+
+            # Adaptive fallback: if too few pass threshold, take top MIN_CANDIDATES regardless
+            if len(filtered) < MIN_CANDIDATES:
+                filtered = sorted_results[:MIN_CANDIDATES]
+                print(f"  Adaptive fallback: only {len([r for r in sorted_results if r.get('score', float('inf')) <= score_threshold])} "
+                      f"passed threshold {score_threshold}, using top {MIN_CANDIDATES} instead")
+
+            # Cap at max_candidates
+            filtered = filtered[:max_candidates]
+
+            print(f"  Score filtering for {facet}: {len(raw_results)} raw → {len(filtered)} after filter "
+                  f"(threshold={score_threshold}, max={max_candidates})")
+            if filtered:
+                print(f"  Score range: {filtered[0].get('score', '?'):.4f} – {filtered[-1].get('score', '?'):.4f}")
+
+            top_names = []
             descriptions = []
-            print(f"Vector search results for {facet}:")
-            for result in vector_search_results[facet]:
-                print(f"  Raw result: {result}")
+            for result in filtered:
                 content = result['content']
                 source = result['metadata']['source']
+                score = result.get('score', None)
                 name = source
-                if name:
-                    top_10.append(name)
+                if name and name not in top_names:  # Deduplicate
+                    top_names.append(name)
                     descriptions.append(re.sub(r'^.*?: ', '', content))
+                    print(f"  ✓ {name} (score: {score:.4f})" if score is not None else f"  ✓ {name}")
 
-            print(f"Extracted top 10 for {facet}: {top_10}")
-            print(f"Extracted descriptions for {facet}: {descriptions}")
+            # Log rejected candidates for transparency
+            rejected_count = len(raw_results) - len(filtered)
+            if rejected_count > 0:
+                print(f"  ✗ {rejected_count} candidates rejected (score > {score_threshold})")
 
-            if top_10:
-                dynamic_fields[facet] = (Optional[Literal[tuple(top_10)]], Field(
+            if top_names:
+                # Add UNMATCHED escape hatch: allows LLM to indicate none of the
+                # RAG candidates match the user's intent, instead of forcing a pick
+                options = tuple(top_names) + ("UNMATCHED",)
+                desc_dict = dict(zip(top_names, descriptions))
+                desc_dict["UNMATCHED"] = "Select this if NONE of the above options match the user's query"
+                dynamic_fields[facet] = (Optional[Literal[options]], Field(
                     default=None,
-                    description=f"Top 10 {facet} matches",
-                    enum_descriptions=dict(zip(top_10, descriptions))
+                    description=f"Top {len(top_names)} {facet} matches (score-filtered, threshold={score_threshold}). Select UNMATCHED if none fit.",
+                    enum_descriptions=desc_dict
                 ))
-                print(f"\nDynamic field created for {facet}:")
-                print(f"  Top 5 options: {top_10[:5]}")
+                print(f"\nDynamic field created for {facet}: {len(top_names)} options + UNMATCHED")
             else:
                 print(f"No valid matches found for {facet}, using default field")
-                dynamic_fields[facet] = (
-                    CMIP6DownloadArgs.__fields__[facet].outer_type_, CMIP6DownloadArgs.__fields__[facet].field_info)
+                if facet in CMIP6DownloadArgs.model_fields:
+                    dynamic_fields[facet] = (
+                        CMIP6DownloadArgs.model_fields[facet].annotation, CMIP6DownloadArgs.model_fields[facet])
         else:
-            print(f"Using default field for {facet}")
-            dynamic_fields[facet] = (
-                CMIP6DownloadArgs.__fields__[facet].outer_type_, CMIP6DownloadArgs.__fields__[facet].field_info)
+            if facet in CMIP6DownloadArgs.model_fields:
+                print(f"Using default field for {facet}")
+                dynamic_fields[facet] = (
+                    CMIP6DownloadArgs.model_fields[facet].annotation, CMIP6DownloadArgs.model_fields[facet])
+            else:
+                print(f"  ⚠ Skipping unknown facet: {facet}")
 
     DynamicCMIP6DownloadArgs = create_model("DynamicCMIP6DownloadArgs", **dynamic_fields)
 
     print("\nDynamic CMIP6DownloadArgs Schema:")
-    print(json.dumps(DynamicCMIP6DownloadArgs.schema(), indent=2))
+    print(json.dumps(DynamicCMIP6DownloadArgs.model_json_schema(), indent=2))
 
     print("--- END CREATING DYNAMIC CMIP6 DOWNLOAD ARGS ---")
     return DynamicCMIP6DownloadArgs

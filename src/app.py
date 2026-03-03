@@ -2,13 +2,14 @@ import streamlit as st
 from src.config import Config
 from src.agents.cmip6_agent import create_cmip6_agent
 from src.utils.chat_utils import display_chat_messages, handle_user_input
+from src.utils.vector_search import prewarm_retrievers
 import os
 
 try:
     os.environ['LANGCHAIN_TRACING_V2'] = st.secrets["LANGCHAIN"]["LANGCHAIN_TRACING_V2"]
     os.environ['LANGCHAIN_ENDPOINT'] = st.secrets["LANGCHAIN"]["LANGCHAIN_ENDPOINT"]
     os.environ['LANGCHAIN_API_KEY'] = st.secrets["LANGCHAIN"]["LANGCHAIN_API_KEY"]
-except:
+except Exception:
     print('No Langchain tracing')
 
 def init_session_state():
@@ -45,6 +46,10 @@ def run_app():
     
     openai_api_key = st.secrets["openai"]["api_key"]
     Config.set_openai_api_key(openai_api_key)
+
+    # Pre-load ChromaDB retrievers for faster first queries
+    prewarm_retrievers()
+
     st.set_page_config(page_title="CMIP6 GPT", page_icon="🤖", layout="wide")
     st.markdown("# CMIP-6 GPT")
 
@@ -53,7 +58,7 @@ def run_app():
         st.title("Configuration")
         model_name = st.selectbox(
             "Select Model", 
-            ["gpt-4o","gpt-4.1","gpt-4.1-nano","gpt-4o-mini"], 
+            Config.get_available_models(), 
             key="model_name"
         )
         if model_name != Config.get_model_name():

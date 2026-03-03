@@ -3,6 +3,8 @@ langchain
 langchain-chroma
 langchain-core
 langchain-openai
+langchain-google-genai
+langchain-google-vertexai
 langchain_experimental
 openai
 chromadb

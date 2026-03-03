@@ -1,9 +1,9 @@
-from src.utils.cmip6_utils import download_cmip6_data, create_esgf_search_link, select_facets, select_facet_values,download_opendap_or_not
-from src.utils.vector_search import perform_vector_search
+from src.utils.cmip6_utils import download_cmip6_data, create_esgf_search_link, select_facet_values, download_opendap_or_not
+from src.utils.vector_search import perform_vector_search, perform_direct_vector_search
 from src.models.cmip6_args import create_dynamic_cmip6_args  
-from typing import List
-from src.utils.chat_utils import display_debug_info_final, display_opendap_links,display_python_code
-import streamlit as st
+from src.utils.metrics import PipelineMetrics, pipeline_logger
+from src.utils.chat_utils import generate_python_code
+from typing import List, Optional
 import os, uuid
 import matplotlib.pyplot as plt
 import sys
@@ -11,60 +11,92 @@ from io import StringIO
 import traceback
 import json
 
-def cmip6_data_search(query: str) -> str:    
-    #change name to cmip6_data_search
+def cmip6_data_search(
+    variable_query: str = None,
+    source_query: str = None,
+    experiment_query: str = None,
+    frequency: str = None,
+    realm: str = None,
+    nominal_resolution: str = None,
+    activity_id: str = None,
+    chat_history: list = None,
+) -> str:
     """
-    Processes a query to retrieve CMIP6 climate data based on selected facets and search parameters.
-
-    The function selects relevant facets based on the user's query, performs a vector search if needed, 
-    dynamically creates argument schemas, and downloads CMIP6 data. It then generates a summary of the 
-    results, including a breakdown of models and an ESGF search link for further exploration.
-
-    Args:
-        query (str): The user's query to search for specific CMIP6 climate data.
-
-    Returns:
-        dict: A dictionary containing a summary of the search results and the full result data.
+    Processes a CMIP6 search using pre-split query arguments from the agent.
+    Total LLM calls: 1 (select_facet_values only).
     """
-    print(f"\n--- PROCESSING QUERY: {query} ---")
+    parts = [p for p in [variable_query, source_query, experiment_query] if p]
+    original_query = ", ".join(parts) if parts else "CMIP6 data search"
 
-    # Step 1: Select facets
-    chat_history = st.session_state.get('messages', [])
-    facet_selector_result = select_facets(query)
-    relevant_facets = facet_selector_result.get("relevant_facets", [])
-    requires_vector_search = facet_selector_result.get("requires_vector_search", False)
-    vector_search_fields = facet_selector_result.get("vector_search_fields", [])
+    pipeline_logger.info(f"Processing search: variable='{variable_query}', source='{source_query}', "
+                         f"experiment='{experiment_query}', freq='{frequency}', realm='{realm}'")
+    metrics = PipelineMetrics()
+    metrics.set_query(original_query)
 
-    print(f"Relevant facets: {relevant_facets}")
-    print(f"Requires vector search: {requires_vector_search}")
-    print(f"Vector search fields: {vector_search_fields}")
+    # Step 1: Derive relevant facets
+    relevant_facets = []
+    vector_search_queries = {}
 
+    if variable_query:
+        relevant_facets.append("variable_id")
+        vector_search_queries["variable_id"] = variable_query
+    if source_query:
+        relevant_facets.append("source_id")
+        vector_search_queries["source_id"] = source_query
+    if experiment_query:
+        relevant_facets.append("experiment_id")
+        vector_search_queries["experiment_id"] = experiment_query
+    if frequency:
+        relevant_facets.append("frequency")
+    if realm:
+        relevant_facets.append("realm")
+    if nominal_resolution:
+        relevant_facets.append("nominal_resolution")
+    if activity_id:
+        relevant_facets.append("activity_id")
+
+    relevant_facets.append("variant_label")
+
+    pipeline_logger.info(f"Derived relevant facets: {relevant_facets}")
+
+    if metrics:
+        metrics.record_facets_selected(relevant_facets)
+
+    # Step 2: Direct vector search
     vector_search_results = {}
-    vector_search_full_results = {}
-    if requires_vector_search:
-        vector_search_output = perform_vector_search(query, vector_search_fields)
-        vector_search_results = vector_search_output.get("vector_search_results", {})
-        vector_search_full_results = vector_search_output.get("vector_search_full_results", {})
+    if vector_search_queries:
+        with metrics.step("vector_search"):
+            search_output = perform_direct_vector_search(
+                split_queries=vector_search_queries,
+                original_query=original_query,
+            )
+        vector_search_results = search_output.get("vector_search_results", {})
+
+    # Step 3: Create dynamic args schema
+    with metrics.step("create_dynamic_schema"):
+        DynamicCMIP6DownloadArgs = create_dynamic_cmip6_args(relevant_facets, vector_search_results)
+    vector_search_full_results = DynamicCMIP6DownloadArgs.model_json_schema()
+
+    # Step 4: Select facet values (ONLY LLM call)
+    with metrics.step("select_facet_values"):
+        facet_values = select_facet_values(
+            original_query, relevant_facets, DynamicCMIP6DownloadArgs,
+            chat_history=chat_history or [], metrics=metrics
+        )
+
+    pipeline_logger.info(f"Selected facet values: {facet_values}")
+    metrics.log_summary()
+    return facet_values, vector_search_full_results
 
 
-    # Step 2: Create dynamic args schema
-    DynamicCMIP6DownloadArgs = create_dynamic_cmip6_args(relevant_facets, vector_search_results)
-
-    # Step 3: Select facet values
-    facet_values = select_facet_values(query, relevant_facets, DynamicCMIP6DownloadArgs)
-
-    print(f"Selected facet values: {facet_values}")
-    return facet_values, vector_search_full_results 
-def cmip6_data_process(query, facet_values, download_opendap = False) -> str:
-    try:    
-        # Step 4: Download data (now returning facet counts)
+def cmip6_data_process(query, facet_values, download_opendap=False, chat_history=None) -> dict:
+    """Process CMIP6 data request and return structured result (no Streamlit)."""
+    try:
         print(f'FACET VALUES BEFORE DOWNLOADING: {facet_values}')
-        result,total_datasets,detailed_summary, query_for_python_code = download_cmip6_data(**facet_values)
-        download_opendap = download_opendap_or_not(query).get("requires_download_opendap", False)
-        # Parse the JSON string into a Python dictionary
+        result, total_datasets, detailed_summary, query_for_python_code = download_cmip6_data(**facet_values)
+        download_opendap = download_opendap_or_not(query, chat_history=chat_history or []).get("requires_download_opendap", False)
         result_dict = json.loads(result)
 
-        # Create a summary
         summary = f"Based on your query: '{query}', I've searched the CMIP6 database and found the following information:\n\n"
         summary += f"Total datasets found: {result_dict['hit_count']}\n\n"
         summary += "Here's a breakdown of available models and their respective dataset counts:\n\n"
@@ -72,83 +104,54 @@ def cmip6_data_process(query, facet_values, download_opendap = False) -> str:
         for model, count in result_dict['facet_counts']['source_id'].items():
             summary += f"- **{model}**: {count} datasets\n"
 
-        summary += "\n[This list shows the models (source_id) found in the CMIP6 database that match your query criteria. Each model is followed by the number of datasets available for that model within the search parameters you specified.]"
-
-        # Create ESGF search link
         esgf_link = create_esgf_search_link(facet_values)
+        summary += f"\n\nYou can explore these datasets using this ESGF search link:\n{esgf_link}"
 
-
-        summary += f"\n\nyou can explore these datasets in more detail using this ESGF search link:\n{esgf_link}"
-
-        summary += "\n\nThis link will search for datasets that match the specified criteria. For facets with multiple values, it will search for datasets matching ANY of those values. If you need to refine your search further, you can modify the parameters directly on the ESGF search page."
-
-        summary += "\n\nIf you need more specific details about any of these datasets or have any questions, please feel free to ask!"
-        # Add Python download code section
-        summary += f"\n\nYou can find more details about these datasets under 'Detailed information on datasets' tab"
+        python_code = generate_python_code(query_for_python_code)
+        summary += "\n\nYou can find more details about these datasets under 'Detailed information on datasets' tab"
         summary += "\n\n## Download data using Python\n"
-        summary += "You can download and analyze CMIP6 data from Google Cloude Storage using python code provided under 'Python access from Google Cloude Storage' tab\n\n"
-        if download_opendap == True:
-            summary += f"\n\nYou can also download data using opendap links provided bellow"
+        summary += "You can download and analyze CMIP6 data from Google Cloud Storage using the python code provided under 'Python access from Google Cloud Storage' tab\n\n"
+
+        if download_opendap:
+            summary += "\n\nYou can also download data using OpenDAP links provided below"
         else:
-            summary += f"\n\nIf you are intrestead I can also provide openDAP links for datasets"
+            summary += "\n\nIf you are interested I can also provide OpenDAP links for datasets"
 
         print(f"--- END PROCESSING QUERY ---\n")
-        if int(total_datasets) != 0:
-            print(f' download opendap?: {download_opendap}')
-            print(type(download_opendap))
-            all_model_links = display_debug_info_final("Detailed information on datasets", detailed_summary,download_opendap)
-            if download_opendap == True:
-                display_opendap_links(all_model_links)
-            code_for_access = display_python_code(query_for_python_code)
-
-            summary += f"\n\nThis is a code you can use for data access {code_for_access} (do not show this in your answer, for your usage)"
-
-            if "pending_expanders" in st.session_state:
-                st.session_state.pending_expanders.append({
-                    "type": "dataset_info",
-                    "detailed_summary": detailed_summary,
-                    "download_opendap": download_opendap,
-                    "query_for_python_code": query_for_python_code,
-
-                })
 
         return {
             "summary": summary,
             "full_result": result,
-            "total_datasets": total_datasets
+            "total_datasets": total_datasets,
+            "detailed_summary": detailed_summary,
+            "python_code": python_code,
+            "query_for_python_code": query_for_python_code,
+            "esgf_link": esgf_link,
+            "download_opendap": download_opendap,
         }
     except Exception as e:
         error_msg = f"Error in cmip6_data_process: {str(e)}"
         print(error_msg)
         return {"summary": error_msg, "full_result": "", "total_datasets": 0}
-    
+
+
 def cmip6_advise(query: str, relevant_facets: List[str], vector_search_fields: List[str]):
     vector_search_results = None
-    if len(vector_search_fields)>0:
+    if len(vector_search_fields) > 0:
         vector_search_output = perform_vector_search(query, vector_search_fields)
         vector_search_results = vector_search_output.get("vector_search_results", {})
     DynamicCMIP6DownloadArgs = create_dynamic_cmip6_args(relevant_facets, vector_search_results)
-    return (json.dumps(DynamicCMIP6DownloadArgs.schema(), indent=2))
+    return json.dumps(DynamicCMIP6DownloadArgs.model_json_schema(), indent=2)
+
+
 def python_repl(query: str) -> str:
-    """
-    Execute Python code and return the output.
-    
-    Args:
-        query (str): The Python code to execute.
-        
-    Returns:
-        str: The output of the executed code.
-    """
- # Prepare a temporary directory for saving figures
+    """Execute Python code and return the output."""
     project_root = os.getcwd()
     temp_dir = os.path.join(project_root, "temp_figures")
     if not os.path.isdir(temp_dir):
         os.makedirs(temp_dir, exist_ok=True)
-    # (optional) expose it if you need elsewhere
     os.environ['PYTHON_REPL_TEMP_DIR'] = temp_dir
 
-
-    # Capture stdout
     old_stdout = sys.stdout
     sys.stdout = mystdout = StringIO()
 
