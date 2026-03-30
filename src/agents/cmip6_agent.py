@@ -9,6 +9,7 @@ from src.services.cmip6_service import cmip6_data_process, cmip6_data_search, cm
 from src.services.llm_service import create_llm, create_prompt_template
 from src.services.analysis_guide import analysis_guide_tool
 from src.services.literature_service import cmip6_literature_search, cmip6_citation_graph
+from src.tools.era5_monthly_tool import era5_monthly_tool
 from src.config import Config
 import os, uuid
 import traceback
@@ -255,6 +256,7 @@ def create_cmip6_agent():
         cmip6_datasets_search, cmip6_datasets_access, cmip6_adviser,
         cmip6_literature_search, cmip6_citation_graph,
         python_repl, analysis_guide_tool,
+        era5_monthly_tool,
     ]
 
     # create_react_agent returns a compiled LangGraph
