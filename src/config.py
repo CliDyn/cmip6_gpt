@@ -74,6 +74,18 @@ class Config:
         return _CONFIG_DATA.get("rag", {}).get("reranking", {"enabled": True, "query_match_boost": 0.3})
 
     @classmethod
+    def get_qdrant_config(cls) -> dict:
+        return _CONFIG_DATA.get("rag", {}).get("qdrant", {
+            "url": "http://localhost:6333",
+            "collections": {
+                "variable_id": "cmip6_variables",
+                "source_id": "cmip6_sources",
+                "experiment_id": "cmip6_experiments",
+                "literature": "cmip6_papers",
+            }
+        })
+
+    @classmethod
     def get_esgf_config(cls) -> dict:
         return _CONFIG_DATA.get("esgf", {
             "search_url": "https://esgf-node.llnl.gov/esg-search/search",
@@ -88,7 +100,7 @@ class Config:
     def get_available_models(cls) -> list:
         return _CONFIG_DATA.get("llm", {}).get("available_models", [
             "gpt-5.2", "gpt-4o", "gpt-4.1", "gpt-4.1-nano", "gpt-4o-mini",
-            "gemini-2.5-pro", "gemini-2.5-flash",
+            "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash",
         ])
 
     @staticmethod

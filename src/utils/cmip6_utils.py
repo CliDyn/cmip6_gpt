@@ -67,7 +67,8 @@ def download_cmip6_data(**kwargs):
         datasets = ctx.search()
         param_counts = {}
 
-        for dataset in datasets:
+        import itertools
+        for dataset in itertools.islice(datasets, 500):  # Cap to prevent ESGF pagination hangs
             source_ids = dataset.json.get('source_id')
             if not source_ids:
                 continue

@@ -94,7 +94,8 @@ def cmip6_data_process(query, facet_values, download_opendap=False, chat_history
     try:
         print(f'FACET VALUES BEFORE DOWNLOADING: {facet_values}')
         result, total_datasets, detailed_summary, query_for_python_code = download_cmip6_data(**facet_values)
-        download_opendap = download_opendap_or_not(query, chat_history=chat_history or []).get("requires_download_opendap", False)
+        import re
+        download_opendap = bool(re.search(r'\b(opendap|dap|netcdf|download)\b', query.lower()))
         result_dict = json.loads(result)
 
         summary = f"Based on your query: '{query}', I've searched the CMIP6 database and found the following information:\n\n"
@@ -143,42 +144,3 @@ def cmip6_advise(query: str, relevant_facets: List[str], vector_search_fields: L
     DynamicCMIP6DownloadArgs = create_dynamic_cmip6_args(relevant_facets, vector_search_results)
     return json.dumps(DynamicCMIP6DownloadArgs.model_json_schema(), indent=2)
 
-
-def python_repl(query: str) -> str:
-    """Execute Python code and return the output."""
-    project_root = os.getcwd()
-    temp_dir = os.path.join(project_root, "temp_figures")
-    if not os.path.isdir(temp_dir):
-        os.makedirs(temp_dir, exist_ok=True)
-    os.environ['PYTHON_REPL_TEMP_DIR'] = temp_dir
-
-    old_stdout = sys.stdout
-    sys.stdout = mystdout = StringIO()
-
-    local_vars = {}
-    saved_files = []
-    error = None
-
-    try:
-        try:
-            result = eval(query, local_vars)
-            if result is not None:
-                print(repr(result))
-        except SyntaxError:
-            exec(query, local_vars)
-
-        for num in plt.get_fignums():
-            fig = plt.figure(num)
-            fname = os.path.join(temp_dir, f"figure_{uuid.uuid4().hex}.png")
-            fig.savefig(fname)
-            saved_files.append(fname)
-            plt.close(fig)
-    except Exception as e:
-        error = f"{e}\n{traceback.format_exc()}"
-        print(f"Error: {str(e)}")
-        print(traceback.format_exc())
-    finally:
-        sys.stdout = old_stdout
-
-    output = mystdout.getvalue()
-    return {"stdout": output, "figures": saved_files, "error": error}

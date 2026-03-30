@@ -2,57 +2,117 @@
 import os
 import json
 import operator
+import numpy as np
 from typing import List, Dict, Any, TypedDict, Annotated, Sequence
 
-from langchain_chroma import Chroma
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, END, START
+from qdrant_client import QdrantClient
 
-from src.services.llm_service import create_embedding
 from src.config import Config
-from src.services.llm_service import create_llm, create_embedding, create_split_query_template
+from src.services.llm_service import create_llm, create_split_query_template
 from src.utils.metrics import pipeline_logger
 
 
-# ─── Retriever Cache (Item #6) ──────────────────────────────────────
-# Singleton cache for ChromaDB retrievers — avoids re-loading on every query.
+# ─── Qdrant Client Cache ────────────────────────────────────────────
 
-_retriever_cache: Dict[str, Chroma] = {}
-
-
-def get_cached_retriever(chroma_path: str) -> Chroma:
-    """
-    Returns a cached ChromaDB retriever for the given path.
-    Creates and caches the retriever on first access.
-    """
-    if chroma_path not in _retriever_cache:
-        pipeline_logger.info(f"Loading retriever from: {chroma_path}")
-        embeddings = create_embedding()
-        _retriever_cache[chroma_path] = Chroma(
-            collection_name="example_collection",
-            embedding_function=embeddings,
-            persist_directory=chroma_path,
-        )
-    else:
-        pipeline_logger.debug(f"Using cached retriever for: {chroma_path}")
-    return _retriever_cache[chroma_path]
+_qdrant_client = None
 
 
-def clear_retriever_cache():
-    """Clear the retriever cache (useful for testing)."""
-    _retriever_cache.clear()
+def get_qdrant_client() -> QdrantClient:
+    """Returns a cached Qdrant client (singleton)."""
+    global _qdrant_client
+    if _qdrant_client is None:
+        qdrant_config = Config.get_qdrant_config()
+        url = qdrant_config.get("url", "http://localhost:6333")
+        pipeline_logger.info(f"Connecting to Qdrant at {url}")
+        _qdrant_client = QdrantClient(url=url, check_compatibility=False)
+    return _qdrant_client
+
+
+# ─── Embedding Helper ───────────────────────────────────────────────
+
+_embed_client = None
+
+
+def _get_embed_client():
+    """Returns a cached google-genai client for embedding queries."""
+    global _embed_client
+    if _embed_client is None:
+        from google import genai
+        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        _embed_client = genai.Client(api_key=api_key)
+    return _embed_client
+
+
+def embed_query(text: str) -> List[float]:
+    """Embed a single query text using gemini-embedding-2-preview."""
+    from google.genai import types
+    client = _get_embed_client()
+    result = client.models.embed_content(
+        model="gemini-embedding-2-preview",
+        contents=[text],
+        config=types.EmbedContentConfig(
+            task_type="RETRIEVAL_QUERY",
+            output_dimensionality=768,
+        ),
+    )
+    vec = np.array(result.embeddings[0].values, dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    return (vec / norm).tolist() if norm > 0 else vec.tolist()
 
 
 def prewarm_retrievers():
-    """Pre-load all ChromaDB retrievers at app startup for faster first queries."""
-    paths = Config.get_retriever_paths()
-    for name, path in paths.items():
-        if os.path.exists(path):
-            get_cached_retriever(path)
-            pipeline_logger.info(f"Pre-warmed retriever: {name}")
-        else:
-            pipeline_logger.warning(f"Retriever path not found (skipping): {path}")
-    pipeline_logger.info(f"Pre-warmed {len(_retriever_cache)} retrievers")
+    """Pre-connect to Qdrant at app startup."""
+    try:
+        client = get_qdrant_client()
+        qdrant_config = Config.get_qdrant_config()
+        collections = qdrant_config.get("collections", {})
+        for name, coll_name in collections.items():
+            info = client.get_collection(coll_name)
+            pipeline_logger.info(f"Pre-warmed Qdrant collection: {coll_name} ({info.points_count} points)")
+    except Exception as e:
+        pipeline_logger.warning(f"Failed to pre-warm Qdrant: {e}")
+
+
+def clear_retriever_cache():
+    """Reset Qdrant client (useful for testing)."""
+    global _qdrant_client, _embed_client
+    _qdrant_client = None
+    _embed_client = None
+
+
+# ─── Qdrant Search ──────────────────────────────────────────────────
+
+def qdrant_similarity_search(collection_name: str, query_vector: List[float], top_k: int = 10):
+    """
+    Search a Qdrant collection and return results in the same format as
+    the old ChromaDB similarity_search_with_score.
+    """
+    client = get_qdrant_client()
+    results = client.query_points(
+        collection_name=collection_name,
+        query=query_vector,
+        limit=top_k,
+        with_payload=True,
+    )
+
+    matches = []
+    for point in results.points:
+        payload = point.payload or {}
+        matches.append({
+            "content": payload.get("text", ""),
+            "metadata": {
+                "source": payload.get("source", payload.get("id", "")),
+                "long_name": payload.get("long_name", ""),
+                "realm": payload.get("realm", ""),
+                "units": payload.get("units", ""),
+                "type": payload.get("type", ""),
+            },
+            "score": point.score,  # cosine similarity (higher = better)
+        })
+
+    return matches
 
 
 # ─── LangGraph State ────────────────────────────────────────────────
@@ -104,9 +164,9 @@ class SplitQueryNode:
 
 
 class RetrieveComponentNode:
-    def __init__(self, component_type: str, db):
+    def __init__(self, component_type: str, collection_name: str):
         self.component_type = component_type
-        self.db = db
+        self.collection_name = collection_name
 
     def __call__(self, state: State) -> Any:
         query_index = {"variable": 0, "source": 1, "experiment": 2}[self.component_type]
@@ -114,31 +174,28 @@ class RetrieveComponentNode:
         if query != '':
             top_k = Config.get_rag_top_k()
             pipeline_logger.info(f"Retrieving top {top_k} for {self.component_type}: '{query}'")
-            results = self.db.similarity_search_with_score(query, k=top_k)
+
+            # Embed query and search Qdrant
+            query_vector = embed_query(query)
+            results = qdrant_similarity_search(self.collection_name, query_vector, top_k)
+
             pipeline_logger.info(f"Retrieved {len(results)} results for {self.component_type}")
 
             return {
                 "fanout_values": [
                     {
-                        self.component_type: [
-                            {
-                                "content": doc.page_content,
-                                "metadata": doc.metadata,
-                                "score": score
-                            } for doc, score in results
-                        ]
+                        self.component_type: results
                     }
                 ]
             }
 
 
-# ─── Re-ranking Node (Item #9) ──────────────────────────────────────
+# ─── Re-ranking Node ────────────────────────────────────────────────
 
 class ReRankNode:
     """
     Re-ranks vector search results by boosting candidates whose metadata
-    source name appears in the original query. This improves precision
-    when users mention specific model/variable/experiment names.
+    source name appears in the original query.
     """
     def __init__(self, original_query: str):
         self.original_query = original_query.lower()
@@ -158,41 +215,33 @@ class ReRankNode:
                     source_name = match.get("metadata", {}).get("source", "").lower()
                     original_score = match["score"]
 
-                    # If the source name appears in the query, boost it (lower distance)
+                    # If the source name appears in the query, boost it (higher similarity)
                     if source_name and source_name in self.original_query:
-                        match["score"] = max(0.0, original_score - boost)
+                        match["score"] = min(1.0, original_score + boost)
                         pipeline_logger.debug(
                             f"Re-rank boost: {source_name} {original_score:.4f} -> {match['score']:.4f}"
                         )
                     reranked.append(match)
 
-                # Re-sort by boosted score
-                reranked.sort(key=lambda r: r["score"])
+                # Re-sort by score (higher = better for cosine similarity)
+                reranked.sort(key=lambda r: r["score"], reverse=True)
                 reranked_values.append({key: reranked})
 
-        # Replace old fanout_values — we return the delta that gets added
         return {"fanout_values": reranked_values}
 
 
 # ─── Compiled Graph Cache ───────────────────────────────────────────
-# Cache compiled LangGraph instances by field combination to avoid
-# rebuilding + recompiling the graph on every query.
 
 _compiled_graphs: Dict[frozenset, Any] = {}
 
 
 def _build_and_compile_graph(vector_search_fields: List[str], query: str):
     """Build and compile a LangGraph for the given field combination."""
-    retriever_paths = Config.get_retriever_paths()
-    retrievers = {
-        "variable_id": get_cached_retriever(retriever_paths["variable_id"]),
-        "source_id": get_cached_retriever(retriever_paths["source_id"]),
-        "experiment_id": get_cached_retriever(retriever_paths["experiment_id"]),
-    }
+    qdrant_config = Config.get_qdrant_config()
+    collections = qdrant_config.get("collections", {})
 
     split_query_template = create_split_query_template()
     llm = create_llm(temperature=0)
-    # Use modern RunnableSequence instead of deprecated LLMChain
     split_chain = split_query_template | llm | StrOutputParser()
 
     builder = StateGraph(State)
@@ -200,9 +249,9 @@ def _build_and_compile_graph(vector_search_fields: List[str], query: str):
     builder.add_edge(START, "split")
 
     retriever_nodes = {
-        "variable_id": RetrieveComponentNode("variable", retrievers["variable_id"]),
-        "source_id": RetrieveComponentNode("source", retrievers["source_id"]),
-        "experiment_id": RetrieveComponentNode("experiment", retrievers["experiment_id"]),
+        "variable_id": RetrieveComponentNode("variable", collections.get("variable_id", "cmip6_variables")),
+        "source_id": RetrieveComponentNode("source", collections.get("source_id", "cmip6_sources")),
+        "experiment_id": RetrieveComponentNode("experiment", collections.get("experiment_id", "cmip6_experiments")),
     }
 
     for field in vector_search_fields:
@@ -214,7 +263,7 @@ def _build_and_compile_graph(vector_search_fields: List[str], query: str):
 
     builder.add_conditional_edges("split", route_all, [f"retrieve_{field}" for field in vector_search_fields])
 
-    # Re-ranking node (Item #9)
+    # Re-ranking node
     reranking_config = Config.get_reranking_config()
     if reranking_config.get("enabled", True):
         rerank_node = ReRankNode(original_query=query)
@@ -235,23 +284,13 @@ def perform_vector_search(query: str, vector_search_fields: List[str]) -> Dict[s
     """
     Performs a vector-based similarity search for the given query across specified CMIP6 fields.
 
-    Uses cached retrievers, LangGraph fan-out for parallel retrieval, and optional re-ranking.
-    The compiled graph is cached per field combination for efficiency.
+    Uses Qdrant, LangGraph fan-out for parallel retrieval, and optional re-ranking.
 
     NOTE: This is the legacy function that uses SplitQueryNode (extra LLM call).
     For the main search pipeline, use perform_direct_vector_search() instead.
-
-    Args:
-        query (str): The user's input query for CMIP6 data.
-        vector_search_fields (List[str]): A list of CMIP6 fields to search.
-
-    Returns:
-        dict: Contains vector_search_results and split_queries.
     """
     pipeline_logger.info(f"Vector search: query='{query}', fields={vector_search_fields}")
 
-    # Always rebuild graph so the split LLM uses the currently selected model.
-    # (Retrievers themselves are cached separately — that's the expensive part.)
     pipeline_logger.info("Compiling LangGraph for field combination")
     graph = _build_and_compile_graph(vector_search_fields, query)
 
@@ -281,7 +320,6 @@ def perform_vector_search(query: str, vector_search_fields: List[str]) -> Dict[s
     }
     vector_search_results = {facet_map[k]: v for k, v in vector_search_results.items()}
 
-    # Item #10: Do NOT create dynamic args here — let the caller do it once
     return {
         "vector_search_results": vector_search_results,
         "split_queries": split_queries,
@@ -310,20 +348,20 @@ def perform_direct_vector_search(
     Bypasses the SplitQueryNode LLM call entirely — the agent already split the
     query into variable/source/experiment components via its tool call arguments.
 
-    Only searches fields where a non-empty query was provided.
-
-    Args:
-        split_queries: Dict with keys 'variable_id', 'source_id', 'experiment_id'
-                       and values being the natural language sub-queries.
-        original_query: The full original query (used for re-ranking boost).
-
-    Returns:
-        dict: Contains vector_search_results with the same format as perform_vector_search.
+    Uses Qdrant for similarity search with gemini-embedding-2-preview embeddings.
     """
-    retriever_paths = Config.get_retriever_paths()
+    qdrant_config = Config.get_qdrant_config()
+    collections = qdrant_config.get("collections", {})
     reranking_config = Config.get_reranking_config()
     top_k = Config.get_rag_top_k()
     boost = reranking_config.get("query_match_boost", 0.3) if reranking_config.get("enabled", True) else 0.0
+
+    # Map facet_id to collection name
+    collection_map = {
+        "variable_id": collections.get("variable_id", "cmip6_variables"),
+        "source_id": collections.get("source_id", "cmip6_sources"),
+        "experiment_id": collections.get("experiment_id", "cmip6_experiments"),
+    }
 
     vector_search_results = {}
 
@@ -333,25 +371,42 @@ def perform_direct_vector_search(
             pipeline_logger.info(f"  Skipping {facet_id}: no query provided")
             continue
 
-        # Get retriever
-        if facet_id not in retriever_paths:
+        # Get collection name
+        if facet_id not in collection_map:
             pipeline_logger.warning(f"  Unknown facet {facet_id}, skipping")
             continue
-        db = get_cached_retriever(retriever_paths[facet_id])
 
-        # Search
+        collection_name = collection_map[facet_id]
+
+        # Embed query and search Qdrant
         pipeline_logger.info(f"  Retrieving top {top_k} for {facet_id}: '{cleaned}'")
-        results = db.similarity_search_with_score(cleaned, k=top_k)
-        pipeline_logger.info(f"  Retrieved {len(results)} results for {facet_id}")
+        query_vector = embed_query(cleaned)
+        matches = qdrant_similarity_search(collection_name, query_vector, top_k)
+        pipeline_logger.info(f"  Retrieved {len(matches)} results for {facet_id}")
 
-        matches = [
-            {
-                "content": doc.page_content,
-                "metadata": doc.metadata,
-                "score": score
-            }
-            for doc, score in results
-        ]
+        # Exact-match injection: if the query contains a known source name that
+        # didn't make it into the top-k vector results, inject it with score=1.0.
+        # Fixes: "historical" embedding scoring lower than "historical-withism" etc.
+        existing_sources = {m["metadata"]["source"].lower() for m in matches}
+        query_words = cleaned.lower().split()
+        for word in query_words:
+            if word not in existing_sources:
+                from qdrant_client.models import Filter, FieldCondition, MatchValue
+                client = get_qdrant_client()
+                exact_hits = client.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=Filter(must=[
+                        FieldCondition(key="source", match=MatchValue(value=word))
+                    ]),
+                    limit=1,
+                    with_payload=True,
+                )[0]
+                if exact_hits:
+                    matches.append({
+                        "metadata": {"source": exact_hits[0].payload.get("source", word)},
+                        "score": 1.0,
+                    })
+                    pipeline_logger.info(f"  Exact-match injected: '{word}' → score=1.0")
 
         # Re-ranking: boost candidates whose source name appears in the combined query
         if boost > 0 and original_query:
@@ -360,9 +415,9 @@ def perform_direct_vector_search(
                 source_name = match.get("metadata", {}).get("source", "").lower()
                 if source_name and source_name in combined_lower:
                     old_score = match["score"]
-                    match["score"] = max(0.0, old_score - boost)
+                    match["score"] = min(1.0, old_score + boost)
                     pipeline_logger.debug(f"  Re-rank boost: {source_name} {old_score:.4f} -> {match['score']:.4f}")
-            matches.sort(key=lambda r: r["score"])
+            matches.sort(key=lambda r: r["score"], reverse=True)
 
         if matches:
             pipeline_logger.info(f"  {facet_id}: top score={matches[0]['score']:.4f}")

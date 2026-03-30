@@ -157,7 +157,7 @@ def create_dynamic_cmip6_args(
         relevant_facets (List[str]): List of facets relevant to the CMIP6 query.
         vector_search_results (Dict[str, List], optional): Vector search results containing relevant data for facets.
         score_threshold (float): Maximum L2 distance to accept a RAG candidate (default from config).
-            Lower values are stricter. Tuned for gemini-embedding-001.
+            Lower values are stricter. Tuned for gemini-embedding-2-preview.
         max_candidates (int): Maximum number of candidates to include in the dynamic schema (default from config).
 
     Returns:
@@ -187,16 +187,16 @@ def create_dynamic_cmip6_args(
         if facet in ["source_id", "variable_id", "experiment_id"] and vector_search_results and facet in vector_search_results:
             # --- Score filtering: keep only relevant candidates ---
             raw_results = vector_search_results[facet]
-            # Sort by score ascending (lower distance = more relevant)
-            sorted_results = sorted(raw_results, key=lambda r: r.get('score', float('inf')))
+            # Sort by score descending (higher cosine similarity = more relevant)
+            sorted_results = sorted(raw_results, key=lambda r: r.get('score', -1.0), reverse=True)
 
-            # Apply threshold filter
-            filtered = [r for r in sorted_results if r.get('score', float('inf')) <= score_threshold]
+            # Apply threshold filter (cosine similarity: keep scores >= threshold)
+            filtered = [r for r in sorted_results if r.get('score', -1.0) >= score_threshold]
 
             # Adaptive fallback: if too few pass threshold, take top MIN_CANDIDATES regardless
             if len(filtered) < MIN_CANDIDATES:
                 filtered = sorted_results[:MIN_CANDIDATES]
-                print(f"  Adaptive fallback: only {len([r for r in sorted_results if r.get('score', float('inf')) <= score_threshold])} "
+                print(f"  Adaptive fallback: only {len([r for r in sorted_results if r.get('score', -1.0) >= score_threshold])} "
                       f"passed threshold {score_threshold}, using top {MIN_CANDIDATES} instead")
 
             # Cap at max_candidates
@@ -222,7 +222,7 @@ def create_dynamic_cmip6_args(
             # Log rejected candidates for transparency
             rejected_count = len(raw_results) - len(filtered)
             if rejected_count > 0:
-                print(f"  ✗ {rejected_count} candidates rejected (score > {score_threshold})")
+                print(f"  ✗ {rejected_count} candidates rejected (score < {score_threshold})")
 
             if top_names:
                 # Add UNMATCHED escape hatch: allows LLM to indicate none of the

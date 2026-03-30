@@ -2,10 +2,10 @@
 # All pipeline parameters in one place for reproducibility and benchmarking.
 
 rag:
-  # Maximum L2 distance to accept a RAG candidate (lower = stricter)
-  # Gemini embeddings (3072-dim): correct matches ~0.2–0.6, noise >1.0
-  # Tuned from 150-query benchmark with gemini-embedding-001
-  score_threshold: 0.8
+  # Minimum cosine similarity to accept a RAG candidate (higher = stricter)
+  # Qdrant cosine similarity: good matches ~0.5–0.9, noise <0.3
+  # Tuned from 150-query benchmark with gemini-embedding-2-preview
+  score_threshold: 0.5
 
   # Maximum number of candidates per facet in dynamic schema
   # Reduced from 10: with 95% Hit@5, fewer candidates = less LLM confusion
@@ -14,19 +14,17 @@ rag:
   # Minimum candidates to keep even if all scores exceed threshold
   min_candidates: 3
 
-  # Number of top matches to retrieve from each ChromaDB collection
-  top_k: 20
+  # Number of top matches to retrieve from each Qdrant collection
+  top_k: 50
 
-  # ChromaDB collection paths (relative to project root)
-  # Gemini-embedding-001 collections (150-query benchmark):
-  #   Overall MRR=0.78, Hit@5=95%
-  #   v2_gemini_variables:   MRR=0.72, H@5=90%
-  #   v2_gemini_experiments: MRR=0.77, H@5=98%
-  #   v3_gemini_sources:     MRR=0.82, H@5=96%
-  retrievers:
-    variable_id: "retrievers/v2_gemini_variables"
-    source_id: "retrievers/v3_gemini_sources"
-    experiment_id: "retrievers/v2_gemini_experiments"
+  # Qdrant vector database (unified backend for all retrieval)
+  qdrant:
+    url: "http://localhost:6333"
+    collections:
+      variable_id: "cmip6_variables"
+      source_id: "cmip6_sources"
+      experiment_id: "cmip6_experiments"
+      literature: "cmip6_papers"
 
   # Re-ranking configuration
   reranking:
@@ -36,15 +34,16 @@ rag:
 
 llm:
   # Default model for the agent
-  default_model: "gpt-5.2"
+  default_model: "gemini-3.1-pro-preview"
   # Available models for UI selection (OpenAI + Google)
   available_models:
-    - "gpt-5.2"
     - "gemini-3.1-pro-preview"
+    - "gpt-5.4"
+    - "gpt-5.2"
   # Temperature for deterministic tool calls (facet selection, value selection)
   tool_temperature: 0
-  # Embedding model (Gemini — 20x cheaper than OpenAI 3-large, better accuracy)
-  embedding_model: "models/gemini-embedding-001"
+  # Embedding model (gemini-embedding-2-preview — 768-dim, MRL, multimodal)
+  embedding_model: "gemini-embedding-2-preview"
   # Embedding provider: "google" or "openai"
   embedding_provider: "google"
 

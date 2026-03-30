@@ -3,10 +3,12 @@
 
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 from src.services.cmip6_service import cmip6_data_process, cmip6_data_search, cmip6_advise
 from src.services.llm_service import create_llm, create_prompt_template
 from src.services.analysis_guide import analysis_guide_tool
+from src.services.literature_service import cmip6_literature_search, cmip6_citation_graph
 from src.config import Config
 import os, uuid
 import traceback
@@ -70,10 +72,14 @@ class PythonREPLArgs(BaseModel):
 # ─── Python REPL ─────────────────────────────────────────────────────
 
 class OptimizedPersistentPythonREPL:
-    """Python REPL that saves plots by path instead of base64."""
-    def __init__(self):
+    """Python REPL that saves plots by path instead of base64.
+    Each session gets its own isolated instance to prevent cross-session leakage."""
+    EXEC_TIMEOUT = 120  # seconds
+
+    def __init__(self, session_id: str = "default"):
+        self.session_id = session_id
         self.locals = {}
-        self.temp_dir = os.path.join(os.getcwd(), "temp_figures")
+        self.temp_dir = os.path.join(os.getcwd(), "temp_figures", session_id)
         os.makedirs(self.temp_dir, exist_ok=True)
         os.environ['PYTHON_REPL_TEMP_DIR'] = self.temp_dir
 
@@ -89,39 +95,59 @@ class OptimizedPersistentPythonREPL:
 
     def run(self, query: str):
         import matplotlib.pyplot as plt
-        old_stdout = sys.stdout
-        sys.stdout = mystdout = StringIO()
-        saved_file_paths = []
-        error = None
-        try:
-            exec(query, self.locals)
-            for num in plt.get_fignums():
-                fig = plt.figure(num)
-                fname = os.path.join(self.temp_dir, f"figure_{uuid.uuid4().hex}.png")
-                fig.savefig(fname, dpi=300, bbox_inches='tight')
-                saved_file_paths.append(fname)
-                plt.close(fig)
-        except Exception as e:
-            error = f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-            print(error)
-        finally:
-            sys.stdout = old_stdout
-            output = mystdout.getvalue()
-        return {
-            "stdout": output,
-            "figure_paths": saved_file_paths,
-            "error": error
-        }
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+        # Lock protects global sys.stdout and matplotlib from concurrent access
+        with _repl_lock:
+            old_stdout = sys.stdout
+            sys.stdout = mystdout = StringIO()
+            saved_file_paths = []
+            error = None
+
+            def _exec_code():
+                exec(query, self.locals)
+
+            try:
+                # Use ThreadPoolExecutor for timeout (thread-safe, unlike signal.alarm)
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_exec_code)
+                    future.result(timeout=self.EXEC_TIMEOUT)
+
+                for num in plt.get_fignums():
+                    fig = plt.figure(num)
+                    fname = os.path.join(self.temp_dir, f"figure_{uuid.uuid4().hex}.png")
+                    fig.savefig(fname, dpi=300, bbox_inches='tight')
+                    saved_file_paths.append(fname)
+                    plt.close(fig)
+            except FuturesTimeout:
+                error = f"Error: Code execution timed out after {self.EXEC_TIMEOUT}s"
+                print(error)
+            except Exception as e:
+                error = f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
+                print(error)
+            finally:
+                sys.stdout = old_stdout
+                output = mystdout.getvalue()
+            return {
+                "stdout": output,
+                "figure_paths": saved_file_paths,
+                "error": error
+            }
 
 
-# ─── Global REPL instance ───────────────────────────────────────────
-_repl_instance = None
+# ─── Session-scoped REPL registry ───────────────────────────────────
+import threading
 
-def _get_repl():
-    global _repl_instance
-    if _repl_instance is None:
-        _repl_instance = OptimizedPersistentPythonREPL()
-    return _repl_instance
+_repl_sessions: dict = {}
+_repl_lock = threading.Lock()  # Protects global sys.stdout and matplotlib
+
+def _get_repl(session_id: str = "default") -> OptimizedPersistentPythonREPL:
+    """Returns a session-scoped REPL instance. Each session is isolated."""
+    if session_id not in _repl_sessions:
+        _repl_sessions[session_id] = OptimizedPersistentPythonREPL(session_id=session_id)
+    return _repl_sessions[session_id]
+
+
 
 
 # ─── Tool Definitions ───────────────────────────────────────────────
@@ -201,12 +227,15 @@ def cmip6_adviser(query: str, relevant_facets: List[str], vector_search_fields: 
 
 
 @tool(args_schema=PythonREPLArgs)
-def python_repl(query: str) -> str:
+def python_repl(query: str, config: RunnableConfig = None) -> str:
     """A Python shell. Use this to execute Python commands. Input should be valid Python code.
     If you want to see the output of a value, print it with `print(...)`.
     Any matplotlib figures will be automatically saved and returned as file paths.
     """
-    repl = _get_repl()
+    session_id = "default"
+    if config and isinstance(config, dict):
+        session_id = config.get("configurable", {}).get("session_id", "default")
+    repl = _get_repl(session_id)
     result = repl.run(query)
     return json.dumps({
         "stdout": result.get("stdout", ""),
@@ -222,7 +251,11 @@ def create_cmip6_agent():
     llm = create_llm()
     prompt_template = create_prompt_template()
 
-    all_tools = [cmip6_datasets_search, cmip6_datasets_access, cmip6_adviser, python_repl, analysis_guide_tool]
+    all_tools = [
+        cmip6_datasets_search, cmip6_datasets_access, cmip6_adviser,
+        cmip6_literature_search, cmip6_citation_graph,
+        python_repl, analysis_guide_tool,
+    ]
 
     # create_react_agent returns a compiled LangGraph
     # The prompt_template's system message is passed as the system prompt
