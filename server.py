@@ -156,7 +156,7 @@ async def chat(req: ChatRequest):
 
         result = agent.invoke(
             {"messages": history},
-            config={"configurable": {"session_id": req.session_id}, "recursion_limit": 30},
+            config={"configurable": {"session_id": req.session_id}, "recursion_limit": 50},
         )
 
         # Extract the final response
@@ -234,7 +234,7 @@ async def chat_stream(req: ChatRequest):
             for event in agent.stream(
                 {"messages": history},
                 stream_mode="updates",
-                config={"configurable": {"session_id": req.session_id}, "recursion_limit": 30},
+                config={"configurable": {"session_id": req.session_id}, "recursion_limit": 50},
             ):
                 # langgraph stream events: {"agent": {"messages": [AIMessage(...)]}}
                 for node_name, node_output in event.items():
