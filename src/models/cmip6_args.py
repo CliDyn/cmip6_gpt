@@ -146,7 +146,7 @@ def create_dynamic_cmip6_args(
 
     This function processes the relevant facets from a CMIP6 query and, if vector search results are available, 
     incorporates the top matches for specific facets (e.g., source_id, variable_id, experiment_id). 
-    Low-relevance candidates are filtered out using a score threshold (ChromaDB L2 distance: lower = better).
+    Low-relevance candidates are filtered out using a score threshold (Qdrant cosine similarity: higher = better, max 1.0).
     For each facet, it either uses default fields from the CMIP6 schema or dynamically generates options 
     based on search results, including descriptions.
 
@@ -156,8 +156,8 @@ def create_dynamic_cmip6_args(
     Args:
         relevant_facets (List[str]): List of facets relevant to the CMIP6 query.
         vector_search_results (Dict[str, List], optional): Vector search results containing relevant data for facets.
-        score_threshold (float): Maximum L2 distance to accept a RAG candidate (default from config).
-            Lower values are stricter. Tuned for gemini-embedding-2-preview.
+        score_threshold (float): Minimum cosine similarity to accept a RAG candidate (default from config).
+            Higher values are stricter (max 1.0). Tuned for gemini-embedding-2-preview via Qdrant.
         max_candidates (int): Maximum number of candidates to include in the dynamic schema (default from config).
 
     Returns:
@@ -210,8 +210,8 @@ def create_dynamic_cmip6_args(
             top_names = []
             descriptions = []
             for result in filtered:
-                content = result['content']
-                source = result['metadata']['source']
+                content = result.get('content', '')
+                source = result.get('metadata', {}).get('source', '')
                 score = result.get('score', None)
                 name = source
                 if name and name not in top_names:  # Deduplicate

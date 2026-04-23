@@ -38,6 +38,7 @@ llm:
   # Available models for UI selection (OpenAI + Google)
   available_models:
     - "gemini-3.1-pro-preview"
+    - "gemini-3.1-pro-preview-vertex"
     - "gpt-5.4"
     - "gpt-5.2"
   # Temperature for deterministic tool calls (facet selection, value selection)

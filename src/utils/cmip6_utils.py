@@ -68,7 +68,7 @@ def download_cmip6_data(**kwargs):
         param_counts = {}
 
         import itertools
-        for dataset in itertools.islice(datasets, 500):  # Cap to prevent ESGF pagination hangs
+        for dataset in itertools.islice(datasets, 50):  # Cap to save memory in batch mode
             source_ids = dataset.json.get('source_id')
             if not source_ids:
                 continue
@@ -117,7 +117,8 @@ def download_cmip6_data(**kwargs):
         summary = json.dumps(result, indent=2)
         query_for_python = dict_to_query_string(param_counts)
         detailed_summary = json.dumps(final_facet_values, indent=2)
-        print(detailed_summary)
+        models_found = list(final_facet_values.get('models', {}).keys())
+        print(f"  → {len(models_found)} model(s): {models_found[:5]}  hits={final_facet_values.get('hit_count', 'N/A')}")
         print("--- END DOWNLOADING CMIP6 DATA ---\n")
 
         return summary, result['hit_count'], detailed_summary, query_for_python
@@ -268,6 +269,130 @@ def select_facet_values(
         metrics.record_facet_values(facet_values)
 
     return facet_values
+
+
+def select_facet_values_batch(
+    queries_with_schemas: List[dict],
+    chat_history: List = None,
+) -> List[Dict[str, Any]]:
+    """Batch version: selects facet values for MULTIPLE queries in ONE LLM call.
+    
+    Args:
+        queries_with_schemas: list of dicts, each with:
+            - 'query': str (the search text)
+            - 'schema': dict (JSON schema from dynamic_args_class.model_json_schema())
+            - 'dynamic_args_class': the Pydantic class (for validation)
+        chat_history: optional conversation history
+    
+    Returns:
+        List of facet_values dicts, one per query.
+    """
+    if not queries_with_schemas:
+        return []
+    
+    # Single query → delegate to original (uses structured output, more reliable)
+    if len(queries_with_schemas) == 1:
+        item = queries_with_schemas[0]
+        result = select_facet_values(
+            item['query'], 
+            list(item['schema'].get('properties', {}).keys()),
+            item['dynamic_args_class'],
+            chat_history=chat_history,
+        )
+        return [result]
+    
+    if chat_history is None:
+        chat_history = []
+    formatted_history = format_chat_history(chat_history)
+    llm = create_llm(temperature=0)
+    
+    # Build combined prompt with all queries and their options
+    query_blocks = []
+    for i, item in enumerate(queries_with_schemas):
+        schema = item['schema']
+        props = schema.get('properties', {})
+        # Build a compact description of allowed values per facet
+        options_text = []
+        for facet, prop_def in props.items():
+            allowed = None
+            if 'enum' in prop_def:
+                allowed = [v for v in prop_def['enum'] if v != 'UNMATCHED']
+            elif 'anyOf' in prop_def:
+                for opt in prop_def['anyOf']:
+                    if 'enum' in opt:
+                        allowed = [v for v in opt['enum'] if v != 'UNMATCHED']
+                        break
+            elif 'allOf' in prop_def:
+                for opt in prop_def['allOf']:
+                    if 'enum' in opt:
+                        allowed = [v for v in opt['enum'] if v != 'UNMATCHED']
+                        break
+            if allowed:
+                options_text.append(f"    {facet}: one of {allowed}")
+            else:
+                desc = prop_def.get('description', '')
+                options_text.append(f"    {facet}: {desc}")
+        
+        query_blocks.append(
+            f"Query {i+1}: \"{item['query']}\"\n"
+            f"  Available facets:\n" + "\n".join(options_text)
+        )
+    
+    combined_prompt = f"""You are selecting CMIP6 facet values for {len(queries_with_schemas)} queries at once.
+For each query, pick the BEST matching value for each facet from the allowed options.
+ALWAYS include variant_label (default: r1i1p1f1) unless specified otherwise.
+Only include facets that are relevant to each specific query.
+
+Conversation context: {formatted_history}
+
+{chr(10).join(query_blocks)}
+
+Return a JSON ARRAY with exactly {len(queries_with_schemas)} objects, one per query.
+Each object should contain only the selected facet key-value pairs.
+Example: [{{"variable_id": "tos", "source_id": "AWI-CM-1-1-MR", "experiment_id": "historical", "variant_label": "r1i1p1f1"}}, ...]
+Return ONLY the JSON array, no markdown, no explanation."""
+
+    pipeline_logger.info(f"Batch select_facet_values: {len(queries_with_schemas)} queries in one LLM call")
+    
+    try:
+        response = llm.invoke(combined_prompt)
+        json_str = response.content
+        # Extract JSON array from response
+        start = json_str.find('[')
+        end = json_str.rfind(']') + 1
+        if start != -1 and end > start:
+            json_str = json_str[start:end]
+        all_facet_values = json.loads(json_str)
+        
+        if not isinstance(all_facet_values, list):
+            raise ValueError(f"Expected JSON array, got {type(all_facet_values)}")
+        
+        # Pad if LLM returned fewer results
+        while len(all_facet_values) < len(queries_with_schemas):
+            all_facet_values.append({})
+        
+        # Validate each result against its schema
+        validated_results = []
+        for i, (facet_values, item) in enumerate(zip(all_facet_values, queries_with_schemas)):
+            validated = _validate_facet_values(facet_values, item['dynamic_args_class'])
+            pipeline_logger.info(f"Batch query {i+1}: {validated}")
+            validated_results.append(validated)
+        
+        return validated_results
+        
+    except Exception as e:
+        pipeline_logger.warning(f"Batch select_facet_values failed ({e}), falling back to sequential")
+        # Fallback: call individual select_facet_values for each query
+        results = []
+        for item in queries_with_schemas:
+            result = select_facet_values(
+                item['query'],
+                list(item['schema'].get('properties', {}).keys()),
+                item['dynamic_args_class'],
+                chat_history=chat_history,
+            )
+            results.append(result)
+        return results
 
 
 def _validate_facet_values(

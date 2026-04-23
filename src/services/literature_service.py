@@ -13,6 +13,7 @@ from typing import List, Optional
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+from src.config import Config
 
 # Add rag/ to path so we can import search functions
 _rag_dir = str(Path(__file__).parent.parent.parent / "rag")
@@ -100,9 +101,12 @@ def cmip6_literature_search(
     """
     from search import hybrid_search
 
+    # Use Config.rag_chunks_per_search as the effective top_k
+    effective_top_k = top_k if top_k != 10 else Config.rag_chunks_per_search
+
     results, timing = hybrid_search(
         query=query,
-        top_k=top_k,
+        top_k=effective_top_k,
         prefetch_k=50,
         rerank="vertex",
         exclude_dois=exclude_dois,

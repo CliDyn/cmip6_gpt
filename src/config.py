@@ -22,6 +22,20 @@ _CONFIG_DATA = _load_config_yaml()
 
 class Config:
     model_name: str = _CONFIG_DATA.get("llm", {}).get("default_model", "o3")
+    # Per-request RAG knobs (updated by server before each request)
+    rag_chunks_per_search: int = 10
+    rag_num_searches: int = 5
+    # Reviewer models (set per-request by server, separate for each reviewer)
+    # ⚠️ INDEPENDENCE NOTE: Using the same model for both reviewers provides
+    # zero epistemic independence — they share identical biases, blind spots,
+    # and hallucination patterns. For genuine defense-in-depth, use different
+    # model families (e.g., gemini + claude, or gemini + gpt).
+    # The current defaults use the same model with different role prompts,
+    # which provides some diversity but NOT true independence.
+    reviewer_model_1: str = "gemini-3.1-pro-preview"
+    reviewer_model_2: str = "gemini-3.1-pro-preview"
+    reviewers_enabled: bool = True
+    REVIEWER_MODELS = ["gemini-3.1-pro-preview", "claude-opus-4-6", "gpt-5.4"]
 
     @classmethod
     def set_model_name(cls, model_name: str):
@@ -63,7 +77,7 @@ class Config:
 
     @classmethod
     def get_rag_score_threshold(cls) -> float:
-        return _CONFIG_DATA.get("rag", {}).get("score_threshold", 1.2)
+        return _CONFIG_DATA.get("rag", {}).get("score_threshold", 0.5)
 
     @classmethod
     def get_rag_max_candidates(cls) -> int:
@@ -99,8 +113,9 @@ class Config:
     @classmethod
     def get_available_models(cls) -> list:
         return _CONFIG_DATA.get("llm", {}).get("available_models", [
+            "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-vertex",
             "gpt-5.2", "gpt-4o", "gpt-4.1", "gpt-4.1-nano", "gpt-4o-mini",
-            "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash",
+            "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash",
         ])
 
     @staticmethod

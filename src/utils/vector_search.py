@@ -45,10 +45,40 @@ def _get_embed_client():
     return _embed_client
 
 
-def embed_query(text: str) -> List[float]:
-    """Embed a single query text using gemini-embedding-2-preview."""
+def embed_query(text: str, _max_retries: int = 4, _base_delay: float = 2.0) -> List[float]:
+    """Embed a single query text using gemini-embedding-2-preview.
+    
+    Includes retry with exponential backoff for 429 rate-limit errors.
+    """
+    import time
     from google.genai import types
     client = _get_embed_client()
+    
+    for attempt in range(_max_retries):
+        try:
+            result = client.models.embed_content(
+                model="gemini-embedding-2-preview",
+                contents=[text],
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_QUERY",
+                    output_dimensionality=768,
+                ),
+            )
+            vec = np.array(result.embeddings[0].values, dtype=np.float32)
+            norm = np.linalg.norm(vec)
+            return (vec / norm).tolist() if norm > 0 else vec.tolist()
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                delay = _base_delay * (2 ** attempt)
+                pipeline_logger.warning(
+                    f"Embedding rate-limited (attempt {attempt+1}/{_max_retries}), "
+                    f"retrying in {delay:.1f}s..."
+                )
+                time.sleep(delay)
+            else:
+                raise
+    # Final attempt — let it raise if it fails
     result = client.models.embed_content(
         model="gemini-embedding-2-preview",
         contents=[text],
@@ -402,8 +432,10 @@ def perform_direct_vector_search(
                     with_payload=True,
                 )[0]
                 if exact_hits:
+                    payload = exact_hits[0].payload or {}
                     matches.append({
-                        "metadata": {"source": exact_hits[0].payload.get("source", word)},
+                        "content": payload.get("text", ""),
+                        "metadata": {"source": payload.get("source", word)},
                         "score": 1.0,
                     })
                     pipeline_logger.info(f"  Exact-match injected: '{word}' → score=1.0")

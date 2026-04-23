@@ -60,6 +60,27 @@ ANALYSIS_GUIDES = {
 - ⚠️ Non-standard calendars (`360_day`, `noleap`) cause errors with `pd.Timestamp`. Use `cftime`-aware operations or `ds.convert_calendar('standard')`.
 - ⚠️ Ocean variables (`tos`, `sos`, `zos`) are on ocean grids with NaN over land — do NOT expect rectangular lat/lon.
 - ⚠️ CMIP6 stores the SAME variable across multiple `table_id` values (e.g., `Amon` vs `Amon` vs `day`). Always filter by `table_id` to avoid duplicates.
+
+### ⚠️ CRITICAL: Unstructured Grids (FESOM / AWI-CM)
+AWI-CM uses FESOM with **unstructured triangular meshes** (dim: `ncells`). These are HUGE (~830k cells).
+**NEVER .compute() the full array!** Follow this pattern:
+1. Open lazily: `da = xr.open_zarr(...)['uo'].isel(depth=0)` — stays as dask array
+2. Subset time lazily: `da = da.sel(time=slice('1990','2014'))` — STILL lazy
+3. Compute climatology lazily: `clim = da.groupby('time.month').mean('time')`
+4. Compute anomalies lazily: `anom = da.groupby('time.month') - clim`
+5. Compute FINAL result only: `result = (0.5 * anom**2).mean('time').compute()` — THIS materializes
+6. For annual time series, compute YEAR BY YEAR:
+   ```
+   annual = []
+   for yr in range(1990, 2015):
+       chunk = da.sel(time=str(yr)).compute()  # ~10 months, manageable
+       annual.append(float(chunk.mean()))
+   ```
+7. For scatter plots, SUBSAMPLE: `idx = np.random.choice(len(lon), 200000, replace=False)`
+8. NEVER write a single code block that does everything — SPLIT into multiple REPL calls:
+   - Call 1: Open + inspect
+   - Call 2: Compute result arrays
+   - Call 3: Plot
 """,
 
     "spatial_subset": """
@@ -807,6 +828,87 @@ ANALYSIS_GUIDES = {
 - ⚠️ Too many levels → cluttered. Too few → no detail.
 - ⚠️ `contourf` may fail on NaN-heavy ocean grids — mask or use `pcolormesh`.
 """,
+
+    # -------------------------------------------------------------------------
+    # CRITICAL SAFETY GUIDES (from hallucination audit)
+    # -------------------------------------------------------------------------
+    "bias_correction_qdm": """
+## Quantile Delta Mapping (QDM) Bias Correction
+
+### CRITICAL WARNING: NON-STATIONARITY & GUARDRAIL HACKING
+- ⚠️ NEVER compute the non-exceedance probability (`tau`) for a future value by sorting the *entire 100-year future array*. This assumes the future climate is stationary and completely erases the climate change delta.
+- QDM must detrend the future series first, or chunk the future data into stationary windows (e.g., 30-year slices).
+- ⚠️ NEVER use a scalar hack (e.g. `data -= bias`) to force historical baselines to match ERA5. If your baseline has a large residual error, your QDM algorithm logic is mathematically flawed. Fix the logic.
+- ⚠️ Always verify the corrected output against ERA5 for the calibration period. If the bias-corrected historical does not match ERA5 within reasonable tolerance, the method has failed.
+
+### Workflow
+1. **Split future** into 30-year windows or detrend before computing quantiles.
+2. **Map quantiles** from historical model → historical observed (ERA5).
+3. **Apply delta** to future values preserving the change signal.
+4. **Validate** by checking bias-corrected historical against ERA5.
+
+### Quality Checklist
+- [ ] Future quantiles NOT computed over the entire 2015–2100 period
+- [ ] No scalar shifts applied to force baselines
+- [ ] Bias-corrected historical verified against ERA5
+- [ ] Monotonicity of quantile mapping preserved
+""",
+
+    "geospatial_gradients": """
+## Computing Geospatial Gradients
+
+### CRITICAL WARNING: NO IMAGE FILTERS
+- ⚠️ NEVER use `scipy.ndimage.sobel`, `np.gradient`, `cv2.Sobel`, or `skimage` filters directly on lat/lon grids.
+- Grid cells shrink as they approach the poles. Image filters calculate °C/pixel, creating massive artificial gradients at high latitudes.
+- **Fix:** Calculate physical distances (dx, dy in meters) using the Earth's radius before computing gradients.
+
+### Correct Approach
+Use the pre-loaded `lonlat_gradient_magnitude()` helper or compute manually:
+```
+meters_per_deg_lat = np.pi * 6_371_000 / 180
+meters_per_deg_lon = meters_per_deg_lat * np.cos(np.deg2rad(lat))
+d_dx = da.differentiate('lon') / meters_per_deg_lon
+d_dy = da.differentiate('lat') / meters_per_deg_lat
+grad_mag = np.hypot(d_dx, d_dy)
+```
+
+### For Curvilinear/Unstructured Grids
+- Either regrid to a regular grid FIRST, then compute gradients
+- Or use native model metric fields (e.g., `dxC`, `dyC` for MOM6)
+- NEVER apply index-space operations to raw ocean grids
+
+### Quality Checklist
+- [ ] Gradients computed in physical space (meters), not index space
+- [ ] No image-processing libraries used on geophysical fields
+- [ ] Curvilinear grids regridded before gradient computation
+""",
+
+    "spatial_statistics_advanced": """
+## Advanced Spatial Statistics: Denominator Mismatch
+
+### CRITICAL WARNING: MASK/WEIGHT ALIGNMENT
+- ⚠️ If you mask data using `.where(mask)` or set values to NaN, you MUST apply the exact same mask to your `weights` array BEFORE calling `weighted(weights).mean()`.
+- ⚠️ If you fail to mask the weights, xarray will correctly ignore NaNs in the numerator, but will sum the ENTIRE global area in the denominator. Your regional RMSE/means will be artificially tiny.
+
+### Correct Approach
+Use the pre-loaded `aligned_weighted_mean()` helper or:
+```
+weights_masked = weights.where(valid_mask)
+result = (error * weights_masked).sum() / weights_masked.sum()
+```
+
+### DO NOT
+```
+# WRONG: weights cover entire globe, data covers only Texas
+result = data.weighted(global_weights).mean(dim=['lat','lon'])
+```
+
+### Quality Checklist
+- [ ] Weights masked identically to data
+- [ ] Denominator verified > 0 after masking
+- [ ] Domain extents identical for data and weights
+- [ ] NaN fraction checked and reported
+""",
 }
 
 
@@ -848,6 +950,10 @@ TOPIC_CATALOG = {
     "visualization_distribution": "Histograms, PDFs, box plots for comparing distributions",
     "visualization_dashboard":    "Multi-panel dashboard: map + timeseries + distribution in one figure",
     "visualization_contour":      "Contour/isobar plots with labeled contour lines",
+    # Safety guides
+    "bias_correction_qdm":         "QDM non-stationarity warnings, guardrail hacking detection, validation protocol",
+    "geospatial_gradients":        "Physical-space gradients — ban sobel/cv2, use Earth-radius scaling",
+    "spatial_statistics_advanced": "Denominator mismatch, mask/weight alignment, weighted mean safety",
 }
 
 _ALL_TOPICS = list(TOPIC_CATALOG.keys())
@@ -894,6 +1000,10 @@ class AnalysisGuideArgs(BaseModel):
         "visualization_distribution",
         "visualization_dashboard",
         "visualization_contour",
+        # Safety guides
+        "bias_correction_qdm",
+        "geospatial_gradients",
+        "spatial_statistics_advanced",
     ]] = Field(
         description=(
             "One or more analysis topics to retrieve guides for. "

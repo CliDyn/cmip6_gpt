@@ -15,6 +15,7 @@ Requires:
 
 import os
 import time
+import json
 import logging
 from pathlib import Path
 from typing import Optional, List
@@ -186,7 +187,11 @@ def retrieve_era5_monthly(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     area_tag = "global" if area is None else f"{area[0]}N_{area[2]}S_{area[1]}W_{area[3]}E"
-    filename = f"era5_{cds_variable}_{year_start}-{year_end}_{area_tag}.nc"
+    # Include months in cache key to prevent collisions (e.g. months=[1] vs months=[6,7,8])
+    import hashlib
+    months_tag = "all" if months is None else hashlib.sha1(
+        json.dumps(sorted(set(months))).encode()).hexdigest()[:8]
+    filename = f"era5_{cds_variable}_{year_start}-{year_end}_{area_tag}_m{months_tag}.nc"
     output_path = output_dir / filename
 
     # Check cache
@@ -303,9 +308,16 @@ era5_monthly_tool = StructuredTool.from_function(
         "from the Copernicus Climate Data Store (CDS).\n\n"
         "USE THIS TOOL when the user needs observational/reanalysis climate data "
         "for comparison with CMIP6 model output or for standalone analysis.\n\n"
-        "VARIABLES: t2m (2m temperature), sst (sea surface temp), tp (precipitation), "
-        "msl (mean sea level pressure), u10/v10 (10m wind), tcc (cloud cover), "
-        "siconc (sea ice cover), tcwv (water vapour), and more.\n\n"
+        "FULL VARIABLE CATALOGUE (use short name OR CDS name):\n"
+        "  TEMPERATURE: t2m (2m temperature, K), skt (skin temperature, K), sst (sea surface temperature, K)\n"
+        "  PRECIPITATION: tp (total precipitation, m), cp (convective precipitation, m), lsp (large-scale precipitation, m)\n"
+        "  PRESSURE: msl (mean sea level pressure, Pa), sp (surface pressure, Pa)\n"
+        "  WIND: u10 (10m U-wind, m/s), v10 (10m V-wind, m/s)\n"
+        "  RADIATION: ssrd (surface solar radiation downwards, J/m²), strd (surface thermal radiation downwards, J/m²), "
+        "tsr (top net solar radiation, J/m²), ttr (top net thermal radiation, J/m²)\n"
+        "  CLOUD & MOISTURE: tcc (total cloud cover, 0-1), tcwv (total column water vapour, kg/m²)\n"
+        "  SNOW & ICE: sd (snow depth water equiv., m), siconc (sea-ice area fraction, 0-1)\n"
+        "  FLUXES: e (evaporation, m), sshf (surface sensible heat flux, J/m²), slhf (surface latent heat flux, J/m²)\n\n"
         "COVERAGE: Global, 0.25° resolution, 1940–present, monthly means.\n\n"
         "Returns NetCDF file path. Load with: xr.open_dataset('path')\n"
         "Use the Python REPL to analyze the downloaded data."

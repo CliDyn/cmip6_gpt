@@ -1,4 +1,4 @@
-from src.utils.cmip6_utils import download_cmip6_data, create_esgf_search_link, select_facet_values, download_opendap_or_not
+from src.utils.cmip6_utils import download_cmip6_data, create_esgf_search_link, select_facet_values, select_facet_values_batch, download_opendap_or_not
 from src.utils.vector_search import perform_vector_search, perform_direct_vector_search
 from src.models.cmip6_args import create_dynamic_cmip6_args  
 from src.utils.metrics import PipelineMetrics, pipeline_logger
@@ -87,6 +87,91 @@ def cmip6_data_search(
     pipeline_logger.info(f"Selected facet values: {facet_values}")
     metrics.log_summary()
     return facet_values, vector_search_full_results
+
+
+def cmip6_data_search_batch(
+    searches: list,
+    chat_history: list = None,
+) -> list:
+    """
+    Batch version of cmip6_data_search: processes multiple searches,
+    batches the vector searches individually but uses ONE LLM call
+    for all facet value selections.
+    
+    Returns: list of (facet_values, schema) tuples.
+    """
+    pipeline_logger.info(f"Batch search: {len(searches)} queries")
+    
+    # Phase 1: Vector search + schema creation for each query (fast, no LLM)
+    prepared = []
+    for i, search in enumerate(searches):
+        variable_query = search.get('variable_query')
+        source_query = search.get('source_query')
+        experiment_query = search.get('experiment_query')
+        frequency = search.get('frequency')
+        realm = search.get('realm')
+        nominal_resolution = search.get('nominal_resolution')
+        activity_id = search.get('activity_id')
+        
+        parts = [p for p in [variable_query, source_query, experiment_query] if p]
+        original_query = ", ".join(parts) if parts else "CMIP6 data search"
+        
+        # Derive relevant facets
+        relevant_facets = []
+        vector_search_queries = {}
+        if variable_query:
+            relevant_facets.append("variable_id")
+            vector_search_queries["variable_id"] = variable_query
+        if source_query:
+            relevant_facets.append("source_id")
+            vector_search_queries["source_id"] = source_query
+        if experiment_query:
+            relevant_facets.append("experiment_id")
+            vector_search_queries["experiment_id"] = experiment_query
+        if frequency:
+            relevant_facets.append("frequency")
+        if realm:
+            relevant_facets.append("realm")
+        if nominal_resolution:
+            relevant_facets.append("nominal_resolution")
+        if activity_id:
+            relevant_facets.append("activity_id")
+        relevant_facets.append("variant_label")
+        
+        # Vector search (Qdrant — fast)
+        vector_search_results = {}
+        if vector_search_queries:
+            search_output = perform_direct_vector_search(
+                split_queries=vector_search_queries,
+                original_query=original_query,
+            )
+            vector_search_results = search_output.get("vector_search_results", {})
+        
+        # Build dynamic schema
+        DynamicArgs = create_dynamic_cmip6_args(relevant_facets, vector_search_results)
+        schema = DynamicArgs.model_json_schema()
+        
+        prepared.append({
+            'query': original_query,
+            'schema': schema,
+            'dynamic_args_class': DynamicArgs,
+            'search': search,
+        })
+        pipeline_logger.info(f"[{i+1}/{len(searches)}] Prepared: {original_query}")
+    
+    # Phase 2: ONE LLM call for all facet selections
+    all_facet_values = select_facet_values_batch(
+        queries_with_schemas=prepared,
+        chat_history=chat_history or [],
+    )
+    
+    # Combine results
+    results = []
+    for prep, facet_values in zip(prepared, all_facet_values):
+        results.append((facet_values, prep['schema']))
+    
+    pipeline_logger.info(f"Batch search complete: {len(results)} results")
+    return results
 
 
 def cmip6_data_process(query, facet_values, download_opendap=False, chat_history=None) -> dict:
