@@ -30,7 +30,7 @@ export async function getMessages(sessionId) {
 /**
  * Send a chat message and get a full (non-streaming) response.
  */
-export async function sendMessage(message, sessionId, modelName) {
+export async function sendMessage(message, sessionId, modelName, googleApiKeySlot = 1) {
     const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -38,6 +38,7 @@ export async function sendMessage(message, sessionId, modelName) {
             message,
             session_id: sessionId,
             model_name: modelName,
+            google_api_key_slot: googleApiKeySlot,
         }),
     });
     if (!res.ok) {
@@ -57,7 +58,16 @@ export async function sendMessage(message, sessionId, modelName) {
  * @param {function} onDone - called when stream completes
  * @param {function} onError - called on error
  */
-export async function streamMessage(message, sessionId, modelName, { onText, onFigures, onDone, onError, onStatus, onSources }) {
+export async function cancelSession(sessionId) {
+    try {
+        const res = await fetch(`${API_BASE}/sessions/${sessionId}/cancel`, { method: 'POST' });
+        return res.ok;
+    } catch (e) {
+        return false;
+    }
+}
+
+export async function streamMessage(message, sessionId, modelName, { onText, onFigures, onDone, onError, onStatus, onSources, googleApiKeySlot = 1, ragChunks = 10, ragSearches = 5, reviewerModel1 = 'gemini-3.1-pro-preview', reviewerModel2 = 'gemini-3.1-pro-preview', reviewersEnabled = true, signal = undefined }) {
     try {
         const res = await fetch(`${API_BASE}/chat/stream`, {
             method: 'POST',
@@ -66,7 +76,14 @@ export async function streamMessage(message, sessionId, modelName, { onText, onF
                 message,
                 session_id: sessionId,
                 model_name: modelName,
+                google_api_key_slot: googleApiKeySlot,
+                rag_chunks: ragChunks,
+                rag_searches: ragSearches,
+                reviewer_model_1: reviewerModel1,
+                reviewer_model_2: reviewerModel2,
+                reviewers_enabled: reviewersEnabled,
             }),
+            signal,
         });
 
         if (!res.ok) {
@@ -118,6 +135,12 @@ export async function streamMessage(message, sessionId, modelName, { onText, onF
             }
         }
     } catch (e) {
+        if (e.name === 'AbortError') {
+            // User-initiated stop — surface as a soft signal, not an error
+            onStatus?.('🛑 Stopped by user');
+            onDone?.();
+            return;
+        }
         onError?.(e.message);
     }
 }

@@ -43,7 +43,7 @@ PRICING = {
     "gemini-embedding-001": {"input": 0.006, "output": 0.0},
     # OpenAI (approximate EUR)
     "gpt-5.2": {"input": 2.50, "output": 10.00},
-    "gpt-5.4": {"input": 2.50, "output": 10.00},
+    "gpt-5.5": {"input": 2.50, "output": 10.00},
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "gpt-4.1": {"input": 2.00, "output": 8.00},
@@ -57,6 +57,27 @@ LOG_DIR = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '
 LOG_FILE = os.path.join(LOG_DIR, "token_usage.jsonl")
 
 _lock = threading.Lock()
+
+# ─── Per-session "last seen" telemetry ────────────────────────────────
+# Used by the dynamic compression hook to know how big the previous LLM
+# input was, so it can decide whether the next call needs compression.
+# Updated from TokenTracker.record() on every AI response.
+_session_last_input_tokens: dict[str, int] = {}
+_session_telemetry_lock = threading.Lock()
+
+
+def get_last_input_tokens(session_id: str) -> int:
+    """Return the most recent input_tokens count reported by the model for
+    this session, or 0 if no LLM call has run yet."""
+    with _session_telemetry_lock:
+        return _session_last_input_tokens.get(session_id, 0)
+
+
+def set_last_input_tokens(session_id: str, n: int) -> None:
+    if n <= 0:
+        return
+    with _session_telemetry_lock:
+        _session_last_input_tokens[session_id] = int(n)
 
 
 def _get_pricing(model_name: str) -> dict:
@@ -140,6 +161,9 @@ class TokenTracker:
         self._total_input += input_tokens
         self._total_output += output_tokens
         self._total_cost += cost
+
+        # Publish for the dynamic compression hook (last value wins).
+        set_last_input_tokens(self._session_id, input_tokens)
 
         call_record = {
             "model": model,

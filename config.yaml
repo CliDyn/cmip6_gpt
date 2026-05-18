@@ -34,12 +34,12 @@ rag:
 
 llm:
   # Default model for the agent
-  default_model: "gemini-3.1-pro-preview"
+  default_model: "gemini-3.1-pro-preview-vertex"
   # Available models for UI selection (OpenAI + Google)
   available_models:
-    - "gemini-3.1-pro-preview"
     - "gemini-3.1-pro-preview-vertex"
-    - "gpt-5.4"
+    - "gemini-3.1-pro-preview"
+    - "gpt-5.5"
     - "gpt-5.2"
   # Temperature for deterministic tool calls (facet selection, value selection)
   tool_temperature: 0
@@ -57,3 +57,67 @@ esgf:
   search_url: "https://esgf-node.llnl.gov/esg-search/search"
   # ESGF web frontend base URL
   web_frontend_url: "https://aims2.llnl.gov/search?"
+
+# Scratchpad compression (pre_model_hook)
+# Compresses old tool results when context approaches the model's window.
+compression:
+  enabled: true
+  # Legacy fallback: max recent tool results kept verbatim when no token telemetry
+  # is available yet. With dynamic triggering this is mostly a floor.
+  keep_recent_tool_results: 6
+  # NEW: dynamic trigger — start compressing when estimated input tokens
+  # exceed trigger_ratio * model_context_limit. Below this, no compression.
+  trigger_ratio: 0.65
+  # Above this ratio compression becomes mandatory and aggressive.
+  hard_ratio: 0.85
+  # Never compress below this many recent tool results, even under pressure.
+  min_keep_tool_results: 3
+  # Truncation limits for compressed results
+  max_stdout_chars: 300
+  max_review_chars: 200
+  # Per-model HARD CAP that overrides trigger_ratio when the model's context
+  # is huge. On Gemini 1M, ratio*ctx = 650k — agent ends up dragging 500k+ of
+  # stale tool stdout into every turn. Capping at 200k forces compression to
+  # kick in MUCH earlier on large-context models — at $3/M tokens, 500k input
+  # per call adds up fast even when the model accepts it.
+  # If a model isn't listed, only trigger_ratio applies.
+  model_token_caps:
+    gemini-3.1-pro-preview-vertex: 200000
+    gemini-3.1-pro-preview:        200000
+    gemini-3-pro:                  200000
+    gemini-3.0-pro:                200000
+    gemini-3-flash-preview:        200000
+
+# Per-model context window sizes (input tokens). Used by the dynamic
+# compression trigger to know how much head-room exists.
+model_context_limits:
+  gemini-3.1-pro-preview-vertex: 1048576
+  gemini-3.1-pro-preview: 1048576
+  gemini-3-pro: 1048576
+  gemini-3.0-pro: 1048576
+  gemini-3-flash-preview: 1048576
+  gemini-2.5-pro: 1048576
+  gemini-2.5-flash: 1048576
+  gpt-5.5: 272000
+  gpt-5.2: 272000
+  gpt-4o: 128000
+  gpt-4.1: 1047576
+  gpt-4.1-nano: 1047576
+  gpt-4o-mini: 128000
+  default: 128000
+
+# Session blackboard — short-term key/value memory the agent can write to.
+# Entries survive context compression by being injected as a SystemMessage
+# right before the LLM call (cache-friendly position at the tail).
+blackboard:
+  enabled: true
+  # Hard caps to prevent the blackboard from itself blowing the context.
+  max_entries: 30
+  max_total_chars: 8000
+  max_value_chars: 500
+  # Auto-populate from these tools (deterministic, no LLM cost):
+  auto_populate:
+    cmip6_datasets_search: true   # write resolved_facets per dataset
+    python_repl: true             # write figure_paths
+    cmip6_methodology_check: true # write top-1 hit summary
+

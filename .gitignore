@@ -20,6 +20,7 @@ __pycache__/
 # Temp/figures
 temp_figures/
 figures/
+results/
 test.ipynb
 
 # Large RAG data
@@ -37,6 +38,32 @@ raw_papers/
 raw_papers_backup_*.tar.gz
 mineru/
 
+# Token usage logs
+logs/
+
 # Frontend build
 frontend/dist/
 frontend/node_modules/
+
+# Article + data artefacts (not for repo)
+new_article/
+era5_monthly_data/
+data/
+runs/
+improve/
+.agents/
+
+# User-case scripts (case-specific, not core)
+scripts/
+
+# Local setup docs (HPC-specific)
+HIFIS_SETUP.md
+LEVANTE_STORAGE.md
+REVIEW_PROMPT.md
+
+# Misc local scratch
+src/src_export.txt
+save_new.py
+test_ui.html
+country_paths.json
+*.bak

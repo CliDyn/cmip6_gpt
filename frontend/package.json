@@ -9,10 +9,13 @@
         "preview": "vite preview"
     },
     "dependencies": {
+        "katex": "^0.16.44",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
         "react-markdown": "^9.0.0",
-        "remark-gfm": "^4.0.0"
+        "rehype-katex": "^7.0.1",
+        "remark-gfm": "^4.0.0",
+        "remark-math": "^6.0.0"
     },
     "devDependencies": {
         "@types/react": "^19.0.0",

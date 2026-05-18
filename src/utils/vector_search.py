@@ -35,36 +35,79 @@ def get_qdrant_client() -> QdrantClient:
 _embed_client = None
 
 
+_VERTEX_EMBED_PROJECT = "project-cfac11fe-4e74-4acc-899"  # same project as ChatVertexAI in llm_service.py
+# 'global' has a 5 RPM default cap on gemini-embedding which 5 parallel
+# literature_search calls hit instantly. Regional endpoints have ~600 RPM.
+# Override via GCP_LOCATION env var if a different region fits your latency.
+_VERTEX_EMBED_LOCATION = "us-central1"
+_VERTEX_EMBED_MODEL = "gemini-embedding-001"
+_AISTUDIO_EMBED_MODEL = "gemini-embedding-2-preview"
+_EMBED_DIM = 768
+
+
 def _get_embed_client():
-    """Returns a cached google-genai client for embedding queries."""
+    """Returns a cached embedder. Two backends, picked by available auth:
+      1. GOOGLE_API_KEY / _1 / _2 → AI Studio (google-genai SDK, gemini-embedding-2-preview)
+      2. ADC                     → Vertex AI (langchain_google_vertexai, gemini-embedding-001)
+
+    Caller invokes `client.embed_query(text)` which returns a list[float] of
+    length _EMBED_DIM regardless of backend.
+    """
     global _embed_client
-    if _embed_client is None:
+    if _embed_client is not None:
+        return _embed_client
+
+    aistudio_key = (
+        os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY_1")
+        or os.environ.get("GOOGLE_API_KEY_2")
+    )
+    if aistudio_key:
         from google import genai
-        api_key = os.environ.get("GOOGLE_API_KEY", "")
-        _embed_client = genai.Client(api_key=api_key)
+        from google.genai import types as _gtypes
+        raw = genai.Client(api_key=aistudio_key)
+
+        class _AIStudioEmbedder:
+            def embed_query(self, text: str):
+                r = raw.models.embed_content(
+                    model=_AISTUDIO_EMBED_MODEL,
+                    contents=[text],
+                    config=_gtypes.EmbedContentConfig(
+                        task_type="RETRIEVAL_QUERY",
+                        output_dimensionality=_EMBED_DIM,
+                    ),
+                )
+                return list(r.embeddings[0].values)
+
+        _embed_client = _AIStudioEmbedder()
+        return _embed_client
+
+    # Vertex via ADC (matches the working ChatVertexAI config)
+    from langchain_google_vertexai import VertexAIEmbeddings
+    project = os.environ.get("GCP_PROJECT", _VERTEX_EMBED_PROJECT)
+    location = os.environ.get("GCP_LOCATION", _VERTEX_EMBED_LOCATION)
+    _embed_client = VertexAIEmbeddings(
+        model_name=_VERTEX_EMBED_MODEL,
+        project=project,
+        location=location,
+        dimensions=_EMBED_DIM,
+    )
     return _embed_client
 
 
-def embed_query(text: str, _max_retries: int = 4, _base_delay: float = 2.0) -> List[float]:
-    """Embed a single query text using gemini-embedding-2-preview.
-    
+def embed_query(text: str, _max_retries: int = 10, _base_delay: float = 3.0) -> List[float]:
+    """Embed a single query via the active backend (AI Studio or Vertex AI ADC).
+
+    Returns an L2-normalized list[float] of length _EMBED_DIM.
     Includes retry with exponential backoff for 429 rate-limit errors.
     """
     import time
-    from google.genai import types
     client = _get_embed_client()
-    
+
     for attempt in range(_max_retries):
         try:
-            result = client.models.embed_content(
-                model="gemini-embedding-2-preview",
-                contents=[text],
-                config=types.EmbedContentConfig(
-                    task_type="RETRIEVAL_QUERY",
-                    output_dimensionality=768,
-                ),
-            )
-            vec = np.array(result.embeddings[0].values, dtype=np.float32)
+            raw = client.embed_query(text)
+            vec = np.array(raw, dtype=np.float32)
             norm = np.linalg.norm(vec)
             return (vec / norm).tolist() if norm > 0 else vec.tolist()
         except Exception as e:
@@ -79,15 +122,8 @@ def embed_query(text: str, _max_retries: int = 4, _base_delay: float = 2.0) -> L
             else:
                 raise
     # Final attempt — let it raise if it fails
-    result = client.models.embed_content(
-        model="gemini-embedding-2-preview",
-        contents=[text],
-        config=types.EmbedContentConfig(
-            task_type="RETRIEVAL_QUERY",
-            output_dimensionality=768,
-        ),
-    )
-    vec = np.array(result.embeddings[0].values, dtype=np.float32)
+    raw = client.embed_query(text)
+    vec = np.array(raw, dtype=np.float32)
     norm = np.linalg.norm(vec)
     return (vec / norm).tolist() if norm > 0 else vec.tolist()
 
@@ -271,7 +307,10 @@ def _build_and_compile_graph(vector_search_fields: List[str], query: str):
     collections = qdrant_config.get("collections", {})
 
     split_query_template = create_split_query_template()
-    llm = create_llm(temperature=0)
+    # Use a fast, cheap AI Studio model for query splitting — avoids burning
+    # Vertex quota on a trivial formatting task (the old default picked the
+    # Config.model_name which is often a Vertex-suffixed model).
+    llm = create_llm(temperature=0, model_name="gemini-3-flash-preview")
     split_chain = split_query_template | llm | StrOutputParser()
 
     builder = StateGraph(State)

@@ -289,18 +289,7 @@ def select_facet_values_batch(
     """
     if not queries_with_schemas:
         return []
-    
-    # Single query → delegate to original (uses structured output, more reliable)
-    if len(queries_with_schemas) == 1:
-        item = queries_with_schemas[0]
-        result = select_facet_values(
-            item['query'], 
-            list(item['schema'].get('properties', {}).keys()),
-            item['dynamic_args_class'],
-            chat_history=chat_history,
-        )
-        return [result]
-    
+
     if chat_history is None:
         chat_history = []
     formatted_history = format_chat_history(chat_history)
@@ -356,14 +345,28 @@ Return ONLY the JSON array, no markdown, no explanation."""
     
     try:
         response = llm.invoke(combined_prompt)
-        json_str = response.content
+        # Vertex sometimes returns content as a list of parts (e.g. text + tool
+        # use chunks); collapse to a single string before extracting JSON.
+        raw = response.content
+        if isinstance(raw, list):
+            json_str = "".join(
+                p.get("text", "") if isinstance(p, dict) else str(p)
+                for p in raw
+            )
+        else:
+            json_str = raw or ""
         # Extract JSON array from response
         start = json_str.find('[')
         end = json_str.rfind(']') + 1
         if start != -1 and end > start:
             json_str = json_str[start:end]
         all_facet_values = json.loads(json_str)
-        
+
+        # For N=1 some models return a single dict instead of a 1-element
+        # array. Auto-wrap rather than raise.
+        if isinstance(all_facet_values, dict) and len(queries_with_schemas) == 1:
+            all_facet_values = [all_facet_values]
+
         if not isinstance(all_facet_values, list):
             raise ValueError(f"Expected JSON array, got {type(all_facet_values)}")
         
@@ -381,18 +384,11 @@ Return ONLY the JSON array, no markdown, no explanation."""
         return validated_results
         
     except Exception as e:
-        pipeline_logger.warning(f"Batch select_facet_values failed ({e}), falling back to sequential")
-        # Fallback: call individual select_facet_values for each query
-        results = []
-        for item in queries_with_schemas:
-            result = select_facet_values(
-                item['query'],
-                list(item['schema'].get('properties', {}).keys()),
-                item['dynamic_args_class'],
-                chat_history=chat_history,
-            )
-            results.append(result)
-        return results
+        # No sequential fallback — that multiplied LLM calls by N on Vertex.
+        # Return empty facet dicts so the agent sees the failure and can retry
+        # with refined queries instead of silently spending tokens.
+        pipeline_logger.warning(f"Batch select_facet_values failed ({e}); returning empty facets")
+        return [{} for _ in queries_with_schemas]
 
 
 def _validate_facet_values(

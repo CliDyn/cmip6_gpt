@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CMIP6 Hybrid Search — Qdrant + mxbai Reranker
-==============================================
+CMIP6 Hybrid Search — Qdrant (dense Gemini + sparse BM25) + Gemini-as-judge rerank
+==================================================================================
 Usage:
     python search.py "FESOM ocean model unstructured mesh"
     python search.py "AMOC weakening SSP5-8.5" --top-k 10
@@ -15,12 +15,23 @@ import json
 import os
 import sys
 import time
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 # ── Load .env ──────────────────────────────────────────────
 load_dotenv(Path(__file__).parent.parent / ".env")
+
+# fastembed's BM25 dispatches via tqdm.contrib.concurrent.thread_map; under
+# uvicorn's worker threading the class-level tqdm._lock is sometimes never
+# initialised, raising AttributeError on .close(). Pin a real RLock once,
+# at module import, to make tqdm safe in concurrent paths.
+try:
+    import tqdm as _tqdm
+    _tqdm.tqdm.set_lock(threading.RLock())
+except Exception:
+    pass
 
 from google import genai
 from google.genai import types
@@ -31,24 +42,67 @@ from fastembed import SparseTextEmbedding
 COLLECTION = "cmip6_papers"
 DENSE_DIM = 768
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-RERANK_MODEL = "mixedbread-ai/mxbai-rerank-base-v2"  # local fallback
-RERANK_MAX_LENGTH = 512  # truncate chunks for faster CPU inference
-VERTEX_PROJECT = os.getenv("GCP_PROJECT", "majestic-lodge-353610")
-VERTEX_RANKING_MODEL = "semantic-ranker-512@latest"
+VERTEX_PROJECT = os.getenv("GCP_PROJECT", "project-cfac11fe-4e74-4acc-899")
+# Vertex AI Rank API — Google's dedicated semantic ranking model. NOT an LLM
+# call; one HTTP hit scores all (query, doc) pairs and returns ranked top_n.
+# `default@latest` auto-tracks the newest accuracy-optimised model — currently
+# semantic-ranker-default-004, top of BEIR NDCG@5 among reranking APIs.
+# (Use `semantic-ranker-fast@latest` instead if you need 3× lower latency.)
+VERTEX_RANKING_MODEL = "semantic-ranker-default@latest"
 GRAPH_PATH = Path(__file__).parent / "citation_graph.json"
 
 # ── Lazy singletons ───────────────────────────────────────
 _gemini = None
 _qdrant = None
 _bm25 = None
-_reranker = None
 _citation_graph = None
 
 
 def get_gemini():
+    """Lazy-init an embedder. Two backends:
+      1. GOOGLE_API_KEY / _1 / _2  → AI Studio (google-genai SDK)
+      2. ADC + GCP project         → Vertex AI via langchain_google_vertexai
+
+    Returned object exposes .embed_query(text) → list[float] (length DENSE_DIM).
+    """
     global _gemini
-    if _gemini is None:
-        _gemini = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+    if _gemini is not None:
+        return _gemini
+
+    aistudio_key = (
+        os.environ.get("GOOGLE_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY_1")
+        or os.environ.get("GOOGLE_API_KEY_2")
+    )
+    if aistudio_key:
+        raw = genai.Client(api_key=aistudio_key)
+
+        class _AIStudio:
+            def embed_query(self, text: str):
+                r = raw.models.embed_content(
+                    model="gemini-embedding-2-preview",
+                    contents=text,
+                    config=types.EmbedContentConfig(
+                        task_type="RETRIEVAL_QUERY",
+                        output_dimensionality=DENSE_DIM,
+                    ),
+                )
+                return list(r.embeddings[0].values)
+
+        _gemini = _AIStudio()
+        return _gemini
+
+    # Vertex via ADC, same project as ChatVertexAI in llm_service.py.
+    # 'global' caps at 5 RPM on gemini-embedding — regional has ~600 RPM.
+    from langchain_google_vertexai import VertexAIEmbeddings
+    project = os.environ.get("GCP_PROJECT", "project-cfac11fe-4e74-4acc-899")
+    location = os.environ.get("GCP_LOCATION", "us-central1")
+    _gemini = VertexAIEmbeddings(
+        model_name="gemini-embedding-001",
+        project=project,
+        location=location,
+        dimensions=DENSE_DIM,
+    )
     return _gemini
 
 
@@ -66,32 +120,38 @@ def get_bm25():
     return _bm25
 
 
-def get_reranker():
-    global _reranker
-    if _reranker is None:
-        from sentence_transformers import CrossEncoder
-        _reranker = CrossEncoder(RERANK_MODEL)
-    return _reranker
-
-
 def get_vertex_ranker():
-    """Vertex AI Ranking API client (free up to 5M records/mo)."""
+    """Vertex AI Rank API client — lightweight semantic ranker, not an LLM."""
     from google.cloud import discoveryengine_v1 as discoveryengine
     return discoveryengine.RankServiceClient()
 
 
 # ── Embedding ─────────────────────────────────────────────
-def embed_query(query: str) -> list[float]:
-    """Embed a query with Gemini (RETRIEVAL_QUERY task type)."""
-    r = get_gemini().models.embed_content(
-        model="gemini-embedding-2-preview",
-        contents=query,
-        config=types.EmbedContentConfig(
-            task_type="RETRIEVAL_QUERY",
-            output_dimensionality=DENSE_DIM,
-        ),
-    )
-    return r.embeddings[0].values
+def embed_query(query: str, _max_retries: int = 10, _base_delay: float = 3.0) -> list[float]:
+    """Embed a query via the active backend (AI Studio or Vertex AI ADC).
+
+    Includes exponential backoff for Vertex's tight 429 RESOURCE_EXHAUSTED
+    quota on gemini-embedding (~5-30 RPM/region default). 5 parallel
+    literature_search calls all share that pool.
+    """
+    last_err: Exception | None = None
+    client = get_gemini()
+    for attempt in range(_max_retries):
+        try:
+            return client.embed_query(query)
+        except Exception as e:
+            err_str = str(e)
+            if any(k in err_str for k in ("429", "RESOURCE_EXHAUSTED", "Quota exceeded")):
+                delay = _base_delay * (2 ** attempt)
+                # Cap at 60s so we don't sleep forever
+                delay = min(delay, 60.0)
+                print(f"[embed] 429 quota hit (attempt {attempt+1}/{_max_retries}), "
+                      f"sleeping {delay:.1f}s")
+                time.sleep(delay)
+                last_err = e
+                continue
+            raise
+    raise RuntimeError(f"embed_query exhausted retries: {last_err}")
 
 
 def sparse_query(query: str) -> models.SparseVector:
@@ -171,7 +231,9 @@ def hybrid_search(
     query: str,
     top_k: int = 5,
     prefetch_k: int = 50,
-    rerank: str | bool = False,  # False, "vertex", "local", or True (=vertex)
+    rerank: bool | str = False,  # truthy → Gemini-as-judge rerank; legacy
+                                  # callers passing "vertex"/"local"/True all
+                                  # take the same Gemini path now.
     exclude_dois: list[str] | None = None,
     year_min: int | None = None,
     year_max: int | None = None,
@@ -181,7 +243,7 @@ def hybrid_search(
 ) -> list[dict]:
     """
     Hybrid search: Dense (Gemini) + Sparse (BM25) → RRF fusion.
-    Optional reranking with mxbai-rerank.
+    Optional reranking via Gemini LLM-as-judge (single API call).
 
     Returns list of dicts with keys:
         score, point_id, chunk_id, paper_id, title, year, journal,
@@ -241,10 +303,7 @@ def hybrid_search(
     t_rerank = 0
     if rerank and results:
         t2 = time.time()
-        if rerank == "vertex":
-            results = _vertex_rerank(query, results, top_k)
-        else:
-            results = _local_rerank(query, results, top_k)
+        results = _vertex_rerank(query, results, top_k)
         t_rerank = time.time() - t2
 
     # 6. Timing metadata
@@ -259,46 +318,45 @@ def hybrid_search(
 
 
 def _vertex_rerank(query, results, top_k):
-    """Rerank via Vertex AI Ranking API (free, ~85ms, best quality)."""
-    from google.cloud import discoveryengine_v1 as discoveryengine
-    client = get_vertex_ranker()
-    records = [
-        discoveryengine.RankingRecord(
-            id=str(i), title=r["title"], content=r["text"][:500]
+    """Rerank via Vertex AI Rank API — Google's dedicated semantic ranking
+    model (NOT a Gemini LLM call). One HTTP call, ~85ms, scores all (query,
+    doc) pairs and returns the top_n in relevance order. On failure falls
+    back to RRF-score order so the caller always gets results.
+    """
+    try:
+        from google.cloud import discoveryengine_v1 as discoveryengine
+        client = get_vertex_ranker()
+        records = [
+            discoveryengine.RankingRecord(
+                id=str(i),
+                title=(r.get("title") or "")[:300],
+                content=(r.get("text") or "")[:500],
+            )
+            for i, r in enumerate(results)
+        ]
+        request = discoveryengine.RankRequest(
+            ranking_config=(
+                f"projects/{VERTEX_PROJECT}/locations/global/"
+                f"rankingConfigs/default_ranking_config"
+            ),
+            model=VERTEX_RANKING_MODEL,
+            query=query,
+            records=records,
+            top_n=top_k,
         )
-        for i, r in enumerate(results)
-    ]
-    request = discoveryengine.RankRequest(
-        ranking_config=f"projects/{VERTEX_PROJECT}/locations/global/rankingConfigs/default_ranking_config",
-        model=VERTEX_RANKING_MODEL,
-        query=query, records=records, top_n=top_k,
-    )
-    response = client.rank(request=request)
-    reranked = []
-    for r in response.records:
-        idx = int(r.id)
-        original = results[idx].copy()
-        original["rerank_score"] = r.score
-        original["rrf_score"] = original.pop("score")
-        original["score"] = r.score
-        reranked.append(original)
-    return reranked
-
-
-def _local_rerank(query, results, top_k):
-    """Rerank via local mxbai model (CPU fallback, slower)."""
-    reranker = get_reranker()
-    docs = [r["text"][:RERANK_MAX_LENGTH] for r in results]
-    ranked = reranker.rank(query, docs, return_documents=False, top_k=top_k)
-    reranked = []
-    for item in ranked:
-        idx = item["corpus_id"]
-        r = results[idx].copy()
-        r["rerank_score"] = item["score"]
-        r["rrf_score"] = r.pop("score")
-        r["score"] = item["score"]
-        reranked.append(r)
-    return reranked
+        response = client.rank(request=request)
+        reranked = []
+        for r in response.records:
+            idx = int(r.id)
+            original = results[idx].copy()
+            original["rerank_score"] = float(r.score)
+            original["rrf_score"] = float(original.pop("score"))
+            original["score"] = float(r.score)
+            reranked.append(original)
+        return reranked
+    except Exception as e:
+        print(f"[vertex_rerank] failed ({e}); falling back to RRF top-{top_k}")
+        return results[:top_k]
 
 
 # ── Citation Graph ────────────────────────────────────────
@@ -384,9 +442,8 @@ def main():
     parser.add_argument("query", nargs="?", default="", help="Search query")
     parser.add_argument("--top-k", type=int, default=5, help="Number of results")
     parser.add_argument("--prefetch-k", type=int, default=50, help="Prefetch pool size for reranking")
-    parser.add_argument("--rerank", nargs="?", const="vertex", default=None,
-                        choices=["vertex", "local"],
-                        help="Enable reranking: 'vertex' (default, API) or 'local' (mxbai CPU)")
+    parser.add_argument("--rerank", action="store_true",
+                        help="Enable Vertex AI Rank API (semantic-ranker-fast-004)")
     parser.add_argument("--exclude-dois", nargs="+", help="DOIs to exclude from results")
     parser.add_argument("--year-min", type=int, help="Minimum publication year")
     parser.add_argument("--year-max", type=int, help="Maximum publication year")

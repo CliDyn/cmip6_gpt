@@ -21,7 +21,7 @@ _CONFIG_DATA = _load_config_yaml()
 
 
 class Config:
-    model_name: str = _CONFIG_DATA.get("llm", {}).get("default_model", "o3")
+    model_name: str = _CONFIG_DATA.get("llm", {}).get("default_model", "gemini-3.1-pro-preview-vertex")
     # Per-request RAG knobs (updated by server before each request)
     rag_chunks_per_search: int = 10
     rag_num_searches: int = 5
@@ -35,7 +35,7 @@ class Config:
     reviewer_model_1: str = "gemini-3.1-pro-preview"
     reviewer_model_2: str = "gemini-3.1-pro-preview"
     reviewers_enabled: bool = True
-    REVIEWER_MODELS = ["gemini-3.1-pro-preview", "claude-opus-4-6", "gpt-5.4"]
+    REVIEWER_MODELS = ["gemini-3.1-pro-preview", "claude-opus-4-7", "gpt-5.5"]
 
     @classmethod
     def set_model_name(cls, model_name: str):
@@ -113,7 +113,7 @@ class Config:
     @classmethod
     def get_available_models(cls) -> list:
         return _CONFIG_DATA.get("llm", {}).get("available_models", [
-            "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-vertex",
+            "gemini-3.1-pro-preview-vertex", "gemini-3.1-pro-preview",
             "gpt-5.2", "gpt-4o", "gpt-4.1", "gpt-4.1-nano", "gpt-4o-mini",
             "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash",
         ])
@@ -130,3 +130,34 @@ class Config:
     @classmethod
     def get_embedding_provider(cls) -> str:
         return _CONFIG_DATA.get("llm", {}).get("embedding_provider", "openai")
+
+    # --- Compression / context-window accessors ---
+
+    @classmethod
+    def get_compression_config(cls) -> dict:
+        return _CONFIG_DATA.get("compression", {})
+
+    @classmethod
+    def get_model_context_limit(cls, model_name: Optional[str] = None) -> int:
+        """Return the input-token capacity for a model. Falls back via prefix match
+        and finally a conservative 128k default."""
+        limits: Dict[str, int] = _CONFIG_DATA.get("model_context_limits", {}) or {}
+        name = model_name or cls.model_name
+        if name in limits:
+            return int(limits[name])
+        for key, val in limits.items():
+            if key == "default":
+                continue
+            if name.startswith(key):
+                return int(val)
+        return int(limits.get("default", 128000))
+
+    # --- Blackboard accessors ---
+
+    @classmethod
+    def get_blackboard_config(cls) -> dict:
+        return _CONFIG_DATA.get("blackboard", {})
+
+    @classmethod
+    def blackboard_enabled(cls) -> bool:
+        return bool(_CONFIG_DATA.get("blackboard", {}).get("enabled", True))

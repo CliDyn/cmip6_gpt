@@ -1,6 +1,8 @@
 import { useState, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import PlotViewer from './PlotViewer';
 
 function CodeBlock({ children, className }) {
@@ -96,7 +98,8 @@ export default function ChatMessage({ message, isStreaming = false }) {
             <div className="message-bubble">
                 <div className={`message-content ${isStreaming ? 'streaming-cursor' : ''}`}>
                     <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
                         components={{
                             code({ node, inline, className, children, ...props }) {
                                 const code = String(children).replace(/\n$/, '');

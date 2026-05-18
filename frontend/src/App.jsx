@@ -1,29 +1,94 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { streamMessage, clearSession, fetchConfig } from './api';
+import { streamMessage, clearSession, fetchConfig, cancelSession } from './api';
+import { exportChatToHtml } from './exportChat';
 import Sidebar from './components/Sidebar';
 import ChatMessage from './components/ChatMessage';
 
 export default function App() {
-    const [messages, setMessages] = useState([]);
+    // --- Persist session across page refreshes ---
+    const [sessionId] = useState(() => {
+        const saved = localStorage.getItem('cmip6-session-id');
+        if (saved) return saved;
+        const id = 'session_' + Math.random().toString(36).slice(2, 10);
+        localStorage.setItem('cmip6-session-id', id);
+        return id;
+    });
+    const [messages, setMessages] = useState(() => {
+        try {
+            const saved = localStorage.getItem('cmip6-messages');
+            return saved ? JSON.parse(saved) : [];
+        } catch { return []; }
+    });
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-    const [sessionId] = useState(() => 'session_' + Math.random().toString(36).slice(2, 10));
-    const [modelName, setModelName] = useState('gpt-5.2');
+    const [modelName, setModelName] = useState(() =>
+        localStorage.getItem('cmip6-model') || 'gpt-5.2'
+    );
     const [models, setModels] = useState([]);
     const [streamingText, setStreamingText] = useState('');
     const [streamingFigures, setStreamingFigures] = useState([]);
     const [streamingSources, setStreamingSources] = useState([]);
     const [agentStatus, setAgentStatus] = useState('');
+    const [ragChunks, setRagChunks] = useState(() =>
+        Number(localStorage.getItem('cmip6-rag-chunks')) || 25
+    );
+    const [ragSearches, setRagSearches] = useState(() =>
+        Number(localStorage.getItem('cmip6-rag-searches')) || 12
+    );
+    const [reviewerModel1, setReviewerModel1] = useState(() => {
+        const v = localStorage.getItem('cmip6-reviewer-model-1') || 'gemini-3.1-pro-preview';
+        return v === 'claude-opus-4-6' ? 'claude-opus-4-7' : v;
+    });
+    const [reviewerModel2, setReviewerModel2] = useState(() => {
+        const v = localStorage.getItem('cmip6-reviewer-model-2') || 'gemini-3.1-pro-preview';
+        return v === 'claude-opus-4-6' ? 'claude-opus-4-7' : v;
+    });
+    const [reviewersEnabled, setReviewersEnabled] = useState(() =>
+        localStorage.getItem('cmip6-reviewers-enabled') !== 'false'
+    );
+    const [reviewerModels, setReviewerModels] = useState([]);
+
     const chatEndRef = useRef(null);
     const inputRef = useRef(null);
+    const abortControllerRef = useRef(null);
+
+    // Persist messages to localStorage whenever they change
+    useEffect(() => {
+        localStorage.setItem('cmip6-messages', JSON.stringify(messages));
+    }, [messages]);
+
+    // Persist settings
+    useEffect(() => {
+        localStorage.setItem('cmip6-model', modelName);
+    }, [modelName]);
+    useEffect(() => {
+        localStorage.setItem('cmip6-rag-chunks', ragChunks);
+    }, [ragChunks]);
+    useEffect(() => {
+        localStorage.setItem('cmip6-rag-searches', ragSearches);
+    }, [ragSearches]);
+    useEffect(() => {
+        localStorage.setItem('cmip6-reviewer-model-1', reviewerModel1);
+    }, [reviewerModel1]);
+    useEffect(() => {
+        localStorage.setItem('cmip6-reviewer-model-2', reviewerModel2);
+    }, [reviewerModel2]);
+    useEffect(() => {
+        localStorage.setItem('cmip6-reviewers-enabled', reviewersEnabled);
+    }, [reviewersEnabled]);
+
 
     // Load available models
     useEffect(() => {
         fetchConfig().then(cfg => {
             setModels(cfg.models || []);
             setModelName(cfg.current_model || 'gpt-5.2');
+            if (cfg.reviewer_models) setReviewerModels(cfg.reviewer_models);
+
         }).catch(() => {
             setModels(['gpt-5.2', 'gpt-4o', 'gpt-4.1', 'gpt-4.1-nano', 'gpt-4o-mini']);
+            setReviewerModels(['gemini-3.1-pro-preview', 'claude-opus-4-7', 'gpt-5.5']);
+
         });
     }, []);
 
@@ -58,7 +123,16 @@ export default function App() {
         let figStdout = '';
         let allSources = [];
 
+        // Set up an AbortController so the user can stop the stream client-side.
+        abortControllerRef.current = new AbortController();
+
         await streamMessage(msg, sessionId, modelName, {
+            signal: abortControllerRef.current.signal,
+            ragChunks,
+            ragSearches,
+            reviewerModel1: reviewersEnabled ? reviewerModel1 : '',
+            reviewerModel2: reviewersEnabled ? reviewerModel2 : '',
+            reviewersEnabled,
             onText: (chunk) => {
                 fullText += chunk;
                 setStreamingText(fullText);
@@ -67,7 +141,7 @@ export default function App() {
                 setAgentStatus(status);
             },
             onFigures: (paths, code, stdout) => {
-                figures = [...figures, ...paths];
+                figures = [...paths];  // replace — show only latest version
                 if (code) figCode = code;
                 if (stdout) figStdout = stdout;
                 setStreamingFigures([...figures]);
@@ -103,7 +177,19 @@ export default function App() {
                 setIsLoading(false);
             },
         });
-    }, [input, isLoading, sessionId, modelName]);
+    }, [input, isLoading, sessionId, modelName, ragChunks, ragSearches, reviewerModel1, reviewerModel2, reviewersEnabled]);
+
+    const handleStop = useCallback(async () => {
+        // Tell the backend to break out at the next agent step boundary, then
+        // abort the local fetch so the UI returns to idle immediately.
+        if (sessionId) {
+            cancelSession(sessionId);
+        }
+        try {
+            abortControllerRef.current?.abort();
+        } catch (_) { /* ignore */ }
+        setAgentStatus('🛑 Stopping...');
+    }, [sessionId]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -118,7 +204,21 @@ export default function App() {
         setStreamingText('');
         setStreamingFigures([]);
         setStreamingSources([]);
+        // Also clear persisted session and generate new one
+        const newId = 'session_' + Math.random().toString(36).slice(2, 10);
+        localStorage.setItem('cmip6-session-id', newId);
+        localStorage.removeItem('cmip6-messages');
+        // Reload to pick up the new session ID
+        window.location.reload();
     };
+
+    const handleExportChat = useCallback(() => {
+        if (messages.length === 0) {
+            alert('No messages to export');
+            return;
+        }
+        exportChatToHtml(messages, modelName);
+    }, [messages, modelName]);
 
     return (
         <div className="app">
@@ -127,6 +227,19 @@ export default function App() {
                 currentModel={modelName}
                 onModelChange={setModelName}
                 onClearChat={handleClearChat}
+                onExportChat={handleExportChat}
+                ragChunks={ragChunks}
+                ragSearches={ragSearches}
+                onRagChunksChange={setRagChunks}
+                onRagSearchesChange={setRagSearches}
+                reviewerModels={reviewerModels}
+                reviewerModel1={reviewerModel1}
+                reviewerModel2={reviewerModel2}
+                onReviewerModel1Change={setReviewerModel1}
+                onReviewerModel2Change={setReviewerModel2}
+                reviewersEnabled={reviewersEnabled}
+                onReviewersEnabledChange={setReviewersEnabled}
+
             />
 
             <main className="chat-main">
@@ -202,19 +315,27 @@ export default function App() {
                             rows={1}
                             disabled={isLoading}
                         />
-                        <button
-                            className="send-button"
-                            onClick={handleSend}
-                            disabled={isLoading || !input.trim()}
-                        >
-                            {isLoading ? (
-                                <span className="spinner" />
-                            ) : (
+                        {isLoading ? (
+                            <button
+                                className="send-button stop-button"
+                                onClick={handleStop}
+                                title="Stop the run"
+                            >
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                                    <rect x="6" y="6" width="12" height="12" rx="2" />
+                                </svg>
+                            </button>
+                        ) : (
+                            <button
+                                className="send-button"
+                                onClick={handleSend}
+                                disabled={!input.trim()}
+                            >
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                     <path d="M22 2L11 13" /><path d="M22 2L15 22L11 13L2 9L22 2Z" />
                                 </svg>
-                            )}
-                        </button>
+                            </button>
+                        )}
                     </div>
                 </div>
             </main>

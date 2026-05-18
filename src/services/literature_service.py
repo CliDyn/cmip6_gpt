@@ -9,11 +9,19 @@ import json
 import sys
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedToolCallId
+from langchain_core.messages import ToolMessage
+from langgraph.prebuilt import InjectedState
+from langgraph.types import Command
 from pydantic import BaseModel, Field
+from typing_extensions import Annotated
 from src.config import Config
+from src.utils.blackboard import (
+    apply_capacity as _bb_apply_capacity,
+    BB_ENABLED as _BB_ENABLED,
+)
 
 # Add rag/ to path so we can import search functions
 _rag_dir = str(Path(__file__).parent.parent.parent / "rag")
@@ -73,15 +81,34 @@ class CitationGraphArgs(BaseModel):
 
 # ── Tool Implementations ──────────────────────────────────
 
+def _bb_cite_key(paper_id: str, doi: str) -> str:
+    """Stable blackboard key per paper. Falls back to DOI if no paper_id."""
+    pid = (paper_id or doi or "unknown").replace(".", "_").replace("/", "_")
+    return f"cite.{pid[:80]}"
+
+
+def _bb_cite_value(rec: dict) -> str:
+    """Compact JSON of {doi, title, year, journal, score} — fits 500 chars."""
+    return json.dumps({
+        "doi": rec.get("doi"),
+        "title": (rec.get("title") or "")[:200],
+        "year": rec.get("year"),
+        "journal": (rec.get("journal") or "")[:80],
+        "score": rec.get("score"),
+    }, ensure_ascii=False, separators=(",", ":"))
+
+
 @tool(args_schema=LiteratureSearchArgs)
 def cmip6_literature_search(
     query: str,
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
     year_min: int = None,
     year_max: int = None,
     journals: list = None,
     exclude_dois: list = None,
     top_k: int = 10,
-) -> str:
+) -> Command:
     """Search 6,800+ CMIP6 scientific papers (101K text chunks) using hybrid vector + keyword search with AI reranking.
 
     Returns relevant paper chunks with titles, years, journals, DOIs, and text excerpts.
@@ -94,11 +121,35 @@ def cmip6_literature_search(
 
     DO NOT USE FOR: Finding CMIP6 datasets to download (use cmip6_datasets_search instead).
 
+    Per-conversation call budget enforced (default 36) to prevent runaway loops
+    when paired with the [RAG DEPTH OVERRIDE] system prompt. When the budget is
+    hit the tool returns a STOP message instead of running.
+
+    🔴 CITATION INTEGRITY: top hits from this tool are auto-saved to the
+    session blackboard under `cite.<paper_id>` keys. THESE ARE THE ONLY DOIs
+    YOU MAY CITE in your final answer. Anything else is hallucination by
+    construction (the LLM has not seen the real DOI in any tool response).
+
     TIPS:
     - If one paper dominates all results, re-query with exclude_dois to get diverse papers
     - Use year_min/year_max to focus on recent or historical work
-    - Results include DOIs — use cmip6_citation_graph to explore citation chains
+    - Use cmip6_citation_graph to explore citation chains
     """
+    # Per-conversation budget (counted from prior ToolMessages in state).
+    # Imported lazily to avoid a circular import with cmip6_agent.
+    from src.agents.cmip6_agent import (
+        _TOOL_CALL_BUDGETS,
+        _count_tool_calls,
+        _budget_exceeded_text,
+    )
+    _budget = _TOOL_CALL_BUDGETS.get("cmip6_literature_search")
+    if _budget and _count_tool_calls(state, "cmip6_literature_search") >= _budget:
+        return Command(update={"messages": [ToolMessage(
+            content=_budget_exceeded_text("cmip6_literature_search", _budget),
+            tool_call_id=tool_call_id,
+            name="cmip6_literature_search",
+        )]})
+
     from search import hybrid_search
 
     # Use Config.rag_chunks_per_search as the effective top_k
@@ -129,12 +180,30 @@ def cmip6_literature_search(
             "text": r["text"][:1200],  # truncate for context window
         })
 
-    return json.dumps({
+    payload = json.dumps({
         "query": query,
         "num_results": len(formatted),
         "latency_ms": timing["total_ms"],
         "results": formatted,
     }, ensure_ascii=False, indent=2)
+
+    # Auto-populate `cite.*` blackboard with top-N hits — this is the
+    # ONLY channel through which DOIs reach the agent's working memory.
+    bb_updates: Dict[str, Optional[str]] = {}
+    if _BB_ENABLED:
+        for rec in formatted[:10]:
+            if not rec.get("doi"):
+                continue
+            key = _bb_cite_key(rec.get("paper_id", ""), rec.get("doi", ""))
+            bb_updates[key] = _bb_cite_value(rec)
+        if bb_updates:
+            bb_updates = _bb_apply_capacity(state.get("blackboard") or {}, bb_updates)
+
+    msg = ToolMessage(content=payload, tool_call_id=tool_call_id, name="cmip6_literature_search")
+    update: Dict[str, Any] = {"messages": [msg]}
+    if bb_updates:
+        update["blackboard"] = bb_updates
+    return Command(update=update)
 
 
 @tool(args_schema=CitationGraphArgs)

@@ -1,4 +1,9 @@
-export default function Sidebar({ models, currentModel, onModelChange, onClearChat }) {
+export default function Sidebar({ models, currentModel, onModelChange, onClearChat, onExportChat, ragChunks, ragSearches, onRagChunksChange, onRagSearchesChange, reviewerModels, reviewerModel1, reviewerModel2, onReviewerModel1Change, onReviewerModel2Change, reviewersEnabled, onReviewersEnabledChange }) {
+    const reviewerDisplayNames = {
+        'gemini-3.1-pro-preview': 'Gemini 3.1 Pro',
+        'claude-opus-4-7': 'Claude Opus 4.7',
+        'gpt-5.5': 'GPT 5.5',
+    };
     return (
         <aside className="sidebar">
             <div className="sidebar-header">
@@ -18,6 +23,87 @@ export default function Sidebar({ models, currentModel, onModelChange, onClearCh
                     ))}
                 </select>
             </div>
+
+
+
+
+            <div className="sidebar-section">
+                <label className="sidebar-label">RAG Depth</label>
+                <div className="slider-group">
+                    <div className="slider-row">
+                        <span className="slider-label">Searches</span>
+                        <input
+                            type="range"
+                            className="sidebar-slider"
+                            min="1"
+                            max="12"
+                            value={ragSearches}
+                            onChange={(e) => onRagSearchesChange(Number(e.target.value))}
+                        />
+                        <span className="slider-value">{ragSearches}</span>
+                    </div>
+                    <div className="slider-row">
+                        <span className="slider-label">Chunks</span>
+                        <input
+                            type="range"
+                            className="sidebar-slider"
+                            min="3"
+                            max="25"
+                            value={ragChunks}
+                            onChange={(e) => onRagChunksChange(Number(e.target.value))}
+                        />
+                        <span className="slider-value">{ragChunks}</span>
+                    </div>
+                    <div className="slider-total">
+                        ≈ {ragSearches * ragChunks} chunks total
+                    </div>
+                </div>
+            </div>
+
+            {reviewerModels && reviewerModels.length > 0 && (
+                <div className="sidebar-section">
+                    <div className="reviewer-header">
+                        <label className="sidebar-label">🔬 Reviewers</label>
+                        <label className="toggle-switch">
+                            <input
+                                type="checkbox"
+                                checked={reviewersEnabled}
+                                onChange={(e) => onReviewersEnabledChange(e.target.checked)}
+                            />
+                            <span className="toggle-slider" />
+                        </label>
+                    </div>
+
+                    {reviewersEnabled && (
+                        <div className="reviewer-selects">
+                            <div className="reviewer-row">
+                                <span className="slider-label">Rev. #1</span>
+                                <select
+                                    className="sidebar-select reviewer-select"
+                                    value={reviewerModel1}
+                                    onChange={(e) => onReviewerModel1Change(e.target.value)}
+                                >
+                                    {reviewerModels.map((m) => (
+                                        <option key={m} value={m}>{reviewerDisplayNames[m] || m}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="reviewer-row">
+                                <span className="slider-label">Rev. #2</span>
+                                <select
+                                    className="sidebar-select reviewer-select"
+                                    value={reviewerModel2}
+                                    onChange={(e) => onReviewerModel2Change(e.target.value)}
+                                >
+                                    {reviewerModels.map((m) => (
+                                        <option key={m} value={m}>{reviewerDisplayNames[m] || m}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
 
             <div className="sidebar-section">
                 <label className="sidebar-label">Theme</label>
@@ -47,6 +133,15 @@ export default function Sidebar({ models, currentModel, onModelChange, onClearCh
             </div>
 
             <div className="sidebar-spacer" />
+
+            <button className="sidebar-button export-btn" onClick={onExportChat}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Export Chat
+            </button>
 
             <button className="sidebar-button danger" onClick={onClearChat}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

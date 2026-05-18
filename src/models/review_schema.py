@@ -22,9 +22,17 @@ class ReviewIssue(BaseModel):
     severity: Literal["critical", "major", "minor"] = Field(
         description="Severity of the issue"
     )
-    claim: str = Field(
-        description="What the reviewer claims is wrong"
+    category: Literal["data", "figure", "method", "code", "prose"] = Field(
+        description=(
+            "What kind of artefact is broken:\n"
+            "- data: numeric values are wrong (units, ranges, conversions)\n"
+            "- figure: plot is misleading (axes, labels, panels, coords)\n"
+            "- method: methodological choice is unsound (sampling, baselines)\n"
+            "- code: implementation bug (off-by-one, missing weights, etc.)\n"
+            "- prose: text-only issue (wording, citations, claims)"
+        )
     )
+    claim: str = Field(description="What the reviewer claims is wrong")
     evidence_type: Literal["stdout_proven", "code_logic", "hypothesis", "figure_visual"] = Field(
         description=(
             "How the reviewer supports this claim:\n"
@@ -44,6 +52,16 @@ class ReviewIssue(BaseModel):
         default=None,
         description="Specific code change to fix the issue"
     )
+    requires_code_change: bool = Field(
+        default=False,
+        description=(
+            "True if fixing this issue requires the worker to RE-RUN python_repl "
+            "with modified code and regenerate the figure. False only if the issue "
+            "is purely about prose (citations, wording). Anything in categories "
+            "{data, figure, method, code} with severity {critical, major} MUST set "
+            "this to True. Text-only acknowledgement is NOT a valid response."
+        )
+    )
     requires_verification: bool = Field(
         default=True,
         description=(
@@ -55,6 +73,14 @@ class ReviewIssue(BaseModel):
 
 class ReviewReport(BaseModel):
     """Complete review report from a single reviewer."""
+    empirical_sanity_summary: str = Field(
+        default="",
+        description=(
+            "One-paragraph summary of whether the STDOUT statistics are physically "
+            "plausible. The reviewer must read STDOUT FIRST and rule out unit-conversion "
+            "or normalisation hallucinations BEFORE listing structural issues."
+        )
+    )
     issues: List[ReviewIssue] = Field(default_factory=list)
     verdict: Literal["accept", "revise", "reject"] = Field(
         description="Overall verdict"

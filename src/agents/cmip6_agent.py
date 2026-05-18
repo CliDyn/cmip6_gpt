@@ -1,8 +1,11 @@
 # Agent implementation using langgraph.prebuilt (compatible with langchain ≥1.0)
 # No more AgentExecutor or StructuredTool — uses @tool decorator + create_react_agent
 
-from langgraph.prebuilt import create_react_agent
-from langchain_core.tools import tool
+from langgraph.prebuilt import create_react_agent, InjectedState
+from langgraph.prebuilt.chat_agent_executor import AgentState
+from langgraph.types import Command
+from langchain_core.tools import tool, InjectedToolCallId
+from langchain_core.messages import ToolMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 from src.services.cmip6_service import cmip6_data_process, cmip6_data_search, cmip6_data_search_batch, cmip6_advise
@@ -11,7 +14,8 @@ from src.services.analysis_guide import analysis_guide_tool
 from src.services.literature_service import cmip6_literature_search, cmip6_citation_graph
 from src.services.methodology_rag_service import cmip6_methodology_check
 from src.tools.era5_monthly_tool import era5_monthly_tool
-from src.config import Config
+from src.utils.token_tracker import get_last_input_tokens
+from src.config import Config, _CONFIG_DATA
 import os, uuid, base64
 import traceback
 import matplotlib
@@ -19,8 +23,81 @@ matplotlib.use('Agg')  # non-interactive backend for server
 import matplotlib.pyplot as plt
 import sys
 from io import StringIO
-from typing import Dict, Any, List, Optional, Literal
+from typing import Dict, Any, List, Optional, Literal, Annotated
+from typing_extensions import TypedDict
 import json
+
+
+# ─── Agent State Schema ──────────────────────────────────────────────
+# Extends the prebuilt AgentState with two fields:
+#   • blackboard — short-term, key/value session memory the agent can write
+#     to. Survives context compression by being injected as a SystemMessage
+#     at the tail of llm_input_messages on every call.
+#   • last_input_tokens — most recent provider-reported input token count,
+#     mirrored from token_tracker. Used by the dynamic compression trigger.
+# Both fields are optional in initial state — the server doesn't need to
+# pass them; reducers handle missing values.
+
+from src.utils.blackboard import (
+    merge_blackboard as _merge_blackboard,
+    apply_capacity as _bb_apply_capacity,
+    format_blackboard as _bb_format,
+    BB_ENABLED as _BB_ENABLED,
+    BB_MAX_VALUE_CHARS as _BB_MAX_VALUE_CHARS,
+)
+
+
+class CMIP6AgentState(AgentState):
+    blackboard: Annotated[Dict[str, str], _merge_blackboard]
+    last_input_tokens: int
+
+
+# ─── Per-tool auto-populate flags from config.yaml ───────────────────
+
+_BB_AUTO = (_CONFIG_DATA.get("blackboard", {}) or {}).get("auto_populate", {}) or {}
+
+
+# ─── Per-tool call budgets ───────────────────────────────────────────
+# Hard caps on how many times each tool can be called per agent invocation.
+# Counted by inspecting state['messages'] for prior ToolMessages with the
+# same name. When exceeded, the tool short-circuits with an error telling
+# the agent to finalize. Combined with a recursion_limit cap on the agent
+# loop itself, this kills the multi-hour runaway pattern (review_figure
+# stub → re-analyze → re-review …) we saw in session_4j8gyvvz.
+
+_TOOL_CALL_BUDGETS = {
+    "python_repl": 30,
+    "review_figure": 5,
+    "reviewer_1": 2,
+    "reviewer_2": 2,
+    "cmip6_datasets_search": 6,
+    # Forced 12× per turn by the [RAG DEPTH OVERRIDE] system prompt; with
+    # recursion_limit=80 this could reach ~12*N turns. 36 = ~3 turns of
+    # full-depth search, which covers any realistic multi-step analysis.
+    "cmip6_literature_search": 36,
+}
+
+
+def _count_tool_calls(state: dict, tool_name: str) -> int:
+    msgs = (state or {}).get("messages") or []
+    n = 0
+    for m in msgs:
+        name = getattr(m, "name", None)
+        if name is None and isinstance(m, dict):
+            name = m.get("name")
+        if name == tool_name:
+            n += 1
+    return n
+
+
+def _budget_exceeded_text(tool_name: str, limit: int) -> str:
+    return (
+        f"BUDGET EXCEEDED: '{tool_name}' was called {limit} times in this "
+        f"conversation, which is the per-invocation limit. STOP calling this "
+        f"tool. Finalize your answer using the data you already have. If the "
+        f"task genuinely cannot be completed within the remaining budget, say "
+        f"so explicitly to the user — do not keep retrying."
+    )
 
 
 # ─── Tool Schemas ────────────────────────────────────────────────────
@@ -216,6 +293,7 @@ class OptimizedPersistentPythonREPL:
         # Import audited scientific helpers
         from src.utils.geo_helpers import (
             aligned_weighted_mean, lonlat_gradient_magnitude,
+            weighted_centroid_2d,
             add_season_year, concat_historical_and_scenario,
             seasonal_mean_continuous, extract_figure_metadata, hidden_lines_qa
         )
@@ -229,6 +307,7 @@ class OptimizedPersistentPythonREPL:
             # Audited scientific helpers — use these instead of ad-hoc reimplementation
             'aligned_weighted_mean': aligned_weighted_mean,
             'lonlat_gradient_magnitude': lonlat_gradient_magnitude,
+            'weighted_centroid_2d': weighted_centroid_2d,
             'add_season_year': add_season_year,
             'concat_hist_ssp': concat_historical_and_scenario,
             'seasonal_mean_continuous': seasonal_mean_continuous,
@@ -402,8 +481,25 @@ def _get_repl_lock(session_id: str = "default") -> threading.Lock:
 
 # ─── Tool Definitions ───────────────────────────────────────────────
 
+def _bb_dataset_key(facets: Dict[str, Any]) -> str:
+    """Compose a stable blackboard key for a resolved CMIP6 dataset."""
+    return ".".join(str(facets.get(f, "?")) for f in (
+        "source_id", "variable_id", "experiment_id", "variant_label", "table_id"
+    ))
+
+
+def _bb_dataset_value(facets: Dict[str, Any], summary: str = "") -> str:
+    """One-line value: just the resolved facet dict (compact)."""
+    keep = {k: v for k, v in facets.items() if v is not None and k != "instance_id"}
+    return json.dumps(keep, default=str, separators=(",", ":"))
+
+
 @tool(args_schema=CMIP6DataSearchArgs)
-def cmip6_datasets_search(searches: List[CMIP6SearchItem]) -> str:
+def cmip6_datasets_search(
+    searches: List[CMIP6SearchItem],
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
     """Search for CMIP6 datasets. ALWAYS pass a list of search items, even for one query.
     Each item has fields: variable_query, source_query, experiment_query, frequency, realm, etc.
     Use natural language — the tool resolves to CMIP6 IDs via RAG, then checks ESGF.
@@ -411,10 +507,21 @@ def cmip6_datasets_search(searches: List[CMIP6SearchItem]) -> str:
     This batches the internal LLM clarification into ONE call for efficiency.
     Example — single: searches=[{variable_query: 'SST', source_query: 'MPI', experiment_query: 'historical'}]
     Example — batch:  searches=[{variable_query: 'uo', ...}, {variable_query: 'vo', ...}, ...]
+
+    Resolved facets are auto-saved to the session blackboard so they survive
+    later context compression (key prefix: 'dataset.').
     """
+    _budget = _TOOL_CALL_BUDGETS.get("cmip6_datasets_search")
+    if _budget and _count_tool_calls(state, "cmip6_datasets_search") >= _budget:
+        return Command(update={"messages": [ToolMessage(
+            content=_budget_exceeded_text("cmip6_datasets_search", _budget),
+            tool_call_id=tool_call_id,
+            name="cmip6_datasets_search",
+        )]})
+
     # Convert Pydantic models to dicts (exclude None values) for the batch pipeline
     search_dicts = [s.model_dump(exclude_none=True) if hasattr(s, 'model_dump') else s for s in searches]
-    
+
     # Use batch path: vector searches individually, then ONE LLM call for all facet selections
     try:
         batch_results = cmip6_data_search_batch(search_dicts)
@@ -430,29 +537,41 @@ def cmip6_datasets_search(searches: List[CMIP6SearchItem]) -> str:
                 f"Inform the user you must refine the search query or retry."
             )
         } for sd in search_dicts]
-        return json.dumps(error_results, default=str)
-    
+        return Command(update={"messages": [ToolMessage(
+            content=json.dumps(error_results, default=str),
+            tool_call_id=tool_call_id,
+            name="cmip6_datasets_search",
+        )]})
+
     results = []
     import resource, gc
     def _rss_mb():
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)  # macOS: bytes→MB
-    
+
     print(f"[datasets_search] Starting batch of {len(search_dicts)} queries | RSS={_rss_mb():.0f}MB")
-    
+
     for i, ((facet_values, schema), sd) in enumerate(zip(batch_results, search_dicts)):
         label = f"[{i+1}/{len(search_dicts)}]"
         parts = [v for v in [sd.get('variable_query'), sd.get('source_query'), sd.get('experiment_query')] if v]
         query_text = ", ".join(parts) if parts else "CMIP6 data search"
         try:
             access_result = cmip6_data_process(query=query_text, facet_values=facet_values)
-            # Keep only essential fields to reduce memory (full_result can be huge)
+            # Aggressively slim — the original `summary` was 3-5KB of full
+            # per-model dataset counts that the agent doesn't need; just keep
+            # whether the *requested* source/variable combo actually exists
+            # plus a few headline numbers and the ESGF link.
+            full_summary = access_result.get("summary", "") or ""
+            requested_source = sd.get("source_query") or facet_values.get("source_id")
+            source_present = None
+            if requested_source:
+                source_present = requested_source in full_summary
             slim_result = {
-                "summary": access_result.get("summary", ""),
                 "total_datasets": access_result.get("total_datasets", 0),
-                "python_code": access_result.get("python_code", ""),
+                "requested_source": requested_source,
+                "requested_source_in_results": source_present,
                 "esgf_link": access_result.get("esgf_link", ""),
             }
-            del access_result  # free full_result, detailed_summary immediately
+            del access_result  # free full_result, detailed_summary, summary, python_code
             results.append({"search": sd, "resolved_facets": facet_values, "access_info": slim_result})
             print(f"{label} ✓ {query_text} | RSS={_rss_mb():.0f}MB")
         except Exception as e:
@@ -460,9 +579,29 @@ def cmip6_datasets_search(searches: List[CMIP6SearchItem]) -> str:
             print(f"{label} ⚠ {query_text}: {e}")
         # Free ESGF connections and intermediate objects after each query
         gc.collect()
-    
+
     print(f"[datasets_search] Batch complete: {len(results)} results | RSS={_rss_mb():.0f}MB")
-    return json.dumps(results, default=str)
+
+    # Auto-populate blackboard with resolved facets (survives compression)
+    bb_updates: Dict[str, Optional[str]] = {}
+    if _BB_ENABLED and _BB_AUTO.get("cmip6_datasets_search", True):
+        for r in results:
+            facets = r.get("resolved_facets") or {}
+            if not facets:
+                continue
+            key = f"dataset.{_bb_dataset_key(facets)}"
+            bb_updates[key] = _bb_dataset_value(facets)
+        bb_updates = _bb_apply_capacity(state.get("blackboard") or {}, bb_updates)
+
+    msg = ToolMessage(
+        content=json.dumps(results, default=str),
+        tool_call_id=tool_call_id,
+        name="cmip6_datasets_search",
+    )
+    update: Dict[str, Any] = {"messages": [msg]}
+    if bb_updates:
+        update["blackboard"] = bb_updates
+    return Command(update=update)
 
 
 @tool(args_schema=CMIP6DataProcessArgs)
@@ -490,11 +629,16 @@ def cmip6_adviser(query: str, relevant_facets: List[str], vector_search_fields: 
 
 
 @tool(args_schema=PythonREPLArgs)
-def python_repl(query: str, config: RunnableConfig = None) -> str:
+def python_repl(
+    query: str,
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    config: RunnableConfig = None,
+) -> Command:
     """A Python shell. Use this to execute Python commands. Input should be valid Python code.
     If you want to see the output of a value, print it with `print(...)`.
     Any matplotlib figures will be automatically saved and returned as file paths.
-    
+
     SESSION WORKSPACE:
     Each session runs in its own isolated directory: results/{session_id}/
     Three path variables are pre-loaded in the REPL namespace:
@@ -503,7 +647,7 @@ def python_repl(query: str, config: RunnableConfig = None) -> str:
       - DATA_DIR    → results/{session_id}/data/ — save intermediate data here
     Relative paths (e.g. 'output.nc', 'plot.png') resolve to WORKSPACE.
     Use os.path.join(FIGURES_DIR, 'my_figure.png') for organized figure storage.
-    
+
     ⚠️ CRITICAL FOR CLOUD DATA (Pangeo zarr, FESOM, etc.):
     - NEVER write a single massive code block. SPLIT into multiple calls:
       Call 1: Open datasets + inspect shapes
@@ -512,32 +656,160 @@ def python_repl(query: str, config: RunnableConfig = None) -> str:
     - NEVER .compute() on full cloud datasets (they can be 100+ GB)
     - For unstructured grids (ncells dim): subsample for scatter plots
     - Timeout is 600s. If data is huge, process year-by-year.
+
+    Figure paths produced here are auto-saved to the blackboard under the
+    'path.' prefix so later turns can reference them after compression.
     """
+    _budget = _TOOL_CALL_BUDGETS.get("python_repl")
+    if _budget and _count_tool_calls(state, "python_repl") >= _budget:
+        return Command(update={"messages": [ToolMessage(
+            content=_budget_exceeded_text("python_repl", _budget),
+            tool_call_id=tool_call_id,
+            name="python_repl",
+        )]})
+
     session_id = "default"
     if config and isinstance(config, dict):
         session_id = config.get("configurable", {}).get("session_id", "default")
     repl = _get_repl(session_id)
     result = repl.run(query)
-    return json.dumps({
+
+    figure_paths = result.get("figure_paths", []) or []
+    payload = {
         "stdout": result.get("stdout", ""),
-        "figure_paths": result.get("figure_paths", []),
-        "error": result.get("error")
-    })
+        "figure_paths": figure_paths,
+        "error": result.get("error"),
+    }
+
+    # Auto-populate blackboard with figure paths (one entry per figure)
+    bb_updates: Dict[str, Optional[str]] = {}
+    if _BB_ENABLED and _BB_AUTO.get("python_repl", True) and figure_paths:
+        for p in figure_paths:
+            short = uuid.uuid4().hex[:6]
+            bb_updates[f"path.fig_{short}"] = p
+        bb_updates = _bb_apply_capacity(state.get("blackboard") or {}, bb_updates)
+
+    msg = ToolMessage(
+        content=json.dumps(payload),
+        tool_call_id=tool_call_id,
+        name="python_repl",
+    )
+    update: Dict[str, Any] = {"messages": [msg]}
+    if bb_updates:
+        update["blackboard"] = bb_updates
+    return Command(update=update)
+
+
+# ─── Blackboard Tools (short-term session memory) ────────────────────
+
+class SaveToMemoryArgs(BaseModel):
+    """Pin a critical fact onto the session blackboard so it survives later
+    context compression. Use SPARINGLY — only for facts you'll need again
+    after several more tool calls."""
+    category: Literal["formula", "dataset", "path", "finding", "citation", "config", "note"] = Field(
+        description=(
+            "Bucket the fact belongs to:\n"
+            "• formula — physical formulas, conversion factors, constants you derived\n"
+            "• dataset — instance_id / facets you confirmed exist on ESGF\n"
+            "• path — figure or data file paths produced earlier\n"
+            "• finding — key empirical numbers (means, ranges, p-values)\n"
+            "• citation — DOIs / paper references already validated\n"
+            "• config — chosen analysis parameters (window length, baseline period)\n"
+            "• note — anything else worth keeping cheap to recall"
+        )
+    )
+    key: str = Field(description="Short, dot-free identifier within the category, e.g. 'heat_index' or 'baseline_period'.")
+    value: str = Field(description=f"The fact, ≤{_BB_MAX_VALUE_CHARS} chars. Longer values are truncated.")
+
+
+class ForgetArgs(BaseModel):
+    full_key: str = Field(description="Full key including category, e.g. 'formula.heat_index'.")
+
+
+@tool(args_schema=SaveToMemoryArgs)
+def save_to_memory(
+    category: str,
+    key: str,
+    value: str,
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Save a critical fact to the session blackboard. The blackboard is
+    injected as a SystemMessage on every LLM call and survives context
+    compression. Use it for formulas, conversion factors, dataset facets,
+    file paths, or key empirical findings you'll need many turns later.
+
+    Capacity is capped (max_entries / max_total_chars in config). If full,
+    call forget(full_key) on something obsolete first.
+    """
+    if not _BB_ENABLED:
+        return Command(update={"messages": [ToolMessage(
+            content="Blackboard is disabled in config.yaml.",
+            tool_call_id=tool_call_id, name="save_to_memory",
+        )]})
+
+    full_key = f"{category}.{key.replace('.', '_').strip()}"
+    current = state.get("blackboard") or {}
+    proposed = _bb_apply_capacity(current, {full_key: value})
+
+    if not proposed:
+        # Either capacity hit or value empty; tell the agent so it can react.
+        reason = "Blackboard at capacity — call forget() on stale entries before retrying."
+        return Command(update={"messages": [ToolMessage(
+            content=reason, tool_call_id=tool_call_id, name="save_to_memory",
+        )]})
+
+    accepted_key, accepted_val = next(iter(proposed.items()))
+    msg = ToolMessage(
+        content=f"Saved blackboard['{accepted_key}'] ({len(accepted_val)} chars).",
+        tool_call_id=tool_call_id,
+        name="save_to_memory",
+    )
+    return Command(update={"blackboard": proposed, "messages": [msg]})
+
+
+@tool(args_schema=ForgetArgs)
+def forget(
+    full_key: str,
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Remove an entry from the session blackboard. Use this when a previous
+    fact is obsolete or you need to free capacity for a new save."""
+    current = state.get("blackboard") or {}
+    if full_key not in current:
+        return Command(update={"messages": [ToolMessage(
+            content=f"No blackboard entry '{full_key}' (current keys: {list(current)[:8]}...).",
+            tool_call_id=tool_call_id, name="forget",
+        )]})
+    msg = ToolMessage(
+        content=f"Removed blackboard['{full_key}'].",
+        tool_call_id=tool_call_id, name="forget",
+    )
+    return Command(update={"blackboard": {full_key: None}, "messages": [msg]})
 
 
 @tool(args_schema=ReviewFigureArgs)
-def review_figure(figure_path: str, mode: str = "qa") -> list:
+def review_figure(
+    figure_path: str,
+    state: Annotated[dict, InjectedState],
+    mode: str = "qa",
+) -> list:
     """Visually inspect a generated figure. Use AFTER python_repl produces a plot.
     Returns the rendered image so you can check correctness and decide whether to fix it.
-    
+
     Three modes:
     • 'correct' — Find issues AND suggest improvements. Use right after first plot.
     • 'describe' — Narrate what the figure shows (patterns, trends, features).
     • 'qa' — Quick pass/fail quality check. Use after applying fixes.
-    
+
     Typical workflow:
       python_repl (plot) → review_figure(mode='correct') → python_repl (fix) → review_figure(mode='qa')
     """
+    _budget = _TOOL_CALL_BUDGETS.get("review_figure")
+    if _budget and _count_tool_calls(state, "review_figure") >= _budget:
+        return _budget_exceeded_text("review_figure", _budget)
+
     if not os.path.exists(figure_path):
         return [{"type": "text", "text": f"ERROR: File not found: {figure_path}"}]
 
@@ -649,11 +921,38 @@ def review_figure(figure_path: str, mode: str = "qa") -> list:
             f"{prompt_text}"
         )
 
-        # Vertex AI cannot handle multimodal list[dict] in tool returns —
-        # return text-only so the agent still gets the review prompt
+        # Vertex AI cannot ingest multimodal list[dict] in tool returns, so the
+        # agent itself can't see the image. Run the vision review out-of-band
+        # against the same Vertex Gemini and return its verdict text.
         current_model = Config.get_model_name()
         if current_model.endswith("-vertex"):
-            return text_part
+            from langchain_core.messages import HumanMessage
+            # Reuse the active Vertex model — it's multimodal natively. Don't
+            # try ChatGoogleGenerativeAI (AI Studio) here: this deployment
+            # auths via vertex_api_key only and has no GOOGLE_API_KEY env.
+            review_llm = create_llm(temperature=0, model_name=current_model)
+            human_msg = HumanMessage(content=[
+                {"type": "text", "text": text_part},
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+            ])
+            try:
+                response = review_llm.invoke([human_msg])
+                review_text = (
+                    response.content if isinstance(response.content, str)
+                    else str(response.content)
+                )
+                return (
+                    f"[review_figure | mode={mode} | {size_kb:.0f} KB | "
+                    f"vision-reviewed via {current_model}]\n"
+                    f"Path: {figure_path}\n\n{review_text}"
+                )
+            except Exception as e:
+                return (
+                    f"[review_figure | mode={mode}] "
+                    f"vision review failed: {e}\n"
+                    f"Path: {figure_path}\n\n{prompt_text}"
+                )
 
         return [
             {"type": "text", "text": text_part},
@@ -707,6 +1006,29 @@ _REVIEWER_SYSTEM_PROMPT = (
     "UNWEIGHTED SPATIAL MEANS: Did they compute .mean(dim=['lat','lon']) without "
     ".weighted(cos(lat))? Grid cells shrink at the poles.\n\n"
 
+    "=== 2.5. RESPECT EXPLICIT USER REQUIREMENTS — HIGHEST PRIORITY ===\n"
+    "BEFORE flagging anything, re-read the `task` field (the literal user prompt).\n"
+    "If a methodological choice was EXPLICITLY requested by the user, you MUST NOT\n"
+    "flag it as a problem — even if it deviates from generic best practice.\n\n"
+    "Specifically forbidden critiques when the user prompt mentions the choice:\n"
+    "  • The user asked for min–max envelope across N small members → do NOT\n"
+    "    demand ±1σ or confidence intervals. Small-N min/max is the user's choice.\n"
+    "  • The user restricted a panel to one scenario (e.g. only SSP5-8.5 in a bar\n"
+    "    chart) → do NOT demand the omitted scenarios be added.\n"
+    "  • The user asked for a specific line colour, linestyle, baseline year, region\n"
+    "    box, or variable (e.g. `tas` vs `tasmax`) → do NOT propose alternatives.\n"
+    "  • The user accepted a known caveat in writing (e.g. 'single member cannot\n"
+    "    resolve internal variability') → do NOT re-raise that caveat as a critique.\n\n"
+    "When a finding contradicts an explicit user requirement, EITHER drop the issue,\n"
+    "OR mark it severity=minor + confidence=low + a note 'user explicitly requested\n"
+    "this; flagging only for documentation'. Do NOT use requires_code_change=True\n"
+    "to override a documented user choice. The user's prompt is law; you are advisory.\n\n"
+    "HISTORICAL INCIDENT: A reviewer attacked a min–max envelope across 3 models\n"
+    "as 'not a meaningful uncertainty range' even though the user prompt explicitly\n"
+    "said 'min–max envelope (not ±1σ; three members is too few for a Gaussian\n"
+    "interval)'. Another reviewer demanded SSP2-4.5 be added to a bar chart even\n"
+    "though the user prompt restricted that panel to SSP5-8.5. DO NOT REPEAT THIS.\n\n"
+
     "=== 3. DATA INTEGRITY AND METHODOLOGY ===\n"
     "Verify correct variables, unit conversions (ONLY if STDOUT suggests implausible "
     "values), temporal subsetting (historical ≤ 2014, SSP ≥ 2015), calendar handling, "
@@ -721,18 +1043,31 @@ _REVIEWER_SYSTEM_PROMPT = (
     "- Maps: coastlines + borders visible? Projection appropriate?\n\n"
 
     "=== REPORTING FORMAT ===\n"
-    "For each issue identified, state:\n"
-    "  [CRITICAL / MAJOR / MINOR] Issue: <concise description>\n"
-    "  Evidence: <what in the code/STDOUT/figure proves this>\n"
-    "  Confidence: <HIGH if proven by STDOUT/metadata, LOW if hypothesis>\n"
-    "  Recommendation: <specific, actionable fix>\n\n"
-    "CRITICAL — produces incorrect scientific results\n"
-    "MAJOR — methodological concern weakening conclusions\n"
-    "MINOR — stylistic or presentational improvement\n\n"
-    "RULE: If confidence is LOW (hypothesis only, not backed by STDOUT or metadata), "
-    "severity CANNOT be CRITICAL. Emit as MAJOR with a note to verify.\n\n"
-    "If the code is sound and the STDOUT stats are physically realistic, output "
-    "'✅ PASS'. Do not invent flaws."
+    "Return a STRUCTURED ReviewReport (the framework will parse your JSON):\n"
+    "  • empirical_sanity_summary: one-paragraph verdict on whether STDOUT stats\n"
+    "    are physically plausible (do this BEFORE listing issues).\n"
+    "  • issues: list of ReviewIssue objects, each with:\n"
+    "      severity:    critical | major | minor\n"
+    "      category:    data | figure | method | code | prose\n"
+    "      claim:       one sentence on what is wrong\n"
+    "      evidence_type: stdout_proven | code_logic | hypothesis | figure_visual\n"
+    "      evidence:    specific lines / values backing the claim\n"
+    "      confidence:  high | medium | low\n"
+    "      proposed_fix: concrete code change\n"
+    "      requires_code_change: TRUE for any data/figure/method/code issue at\n"
+    "        critical or major severity. FALSE only for prose-only nits.\n"
+    "      requires_verification: TRUE if the fix changes math (must be empirically\n"
+    "        re-tested before being accepted).\n"
+    "  • verdict: accept | revise | reject\n\n"
+
+    "RULES:\n"
+    "  • CRITICAL — produces incorrect scientific results.\n"
+    "  • MAJOR — methodological concern weakening conclusions.\n"
+    "  • MINOR — stylistic or presentational improvement.\n"
+    "  • LOW confidence + CRITICAL severity is INVALID. If you cannot prove a\n"
+    "    CRITICAL claim from STDOUT/metadata, downgrade to MAJOR with a verify note.\n"
+    "  • If the code is sound and STDOUT stats are physically realistic, return\n"
+    "    `verdict='accept'` with empty `issues` list. Do NOT invent flaws.\n"
 )
 
 
@@ -783,8 +1118,102 @@ def _build_reviewer_content(task: str, background: str, code: str, stdout: str =
     return content_parts
 
 
+def _format_review_report(report, reviewer_id: str, model_name: str) -> str:
+    """Render a ReviewReport (Pydantic) as readable text for the worker.
+    Surfaces requires_code_change as a MANDATE banner so the agent can't miss it."""
+    from src.models.review_schema import ReviewReport, ReviewIssue
+    if not isinstance(report, ReviewReport):
+        return f"[{reviewer_id} -- {model_name}]\n\n{str(report)}"
+
+    lines = [f"[{reviewer_id} -- {model_name}]"]
+    if report.empirical_sanity_summary:
+        lines.append("")
+        lines.append("EMPIRICAL SANITY SUMMARY")
+        lines.append(report.empirical_sanity_summary.strip())
+
+    must_re_execute = [
+        i for i in report.issues
+        if i.requires_code_change and i.severity in ("critical", "major")
+    ]
+
+    lines.append("")
+    lines.append(f"VERDICT: {report.verdict.upper()}  ({len(report.issues)} issue(s))")
+    if must_re_execute:
+        lines.append("")
+        lines.append(
+            f"Note: {len(must_re_execute)} issue(s) have requires_code_change=True at "
+            f"critical/major severity. The expected next step is to apply the proposed "
+            f"fix in python_repl and regenerate the figure (then re-run review_figure to "
+            f"confirm). If you disagree with the reviewer, push back with a python_repl "
+            f"experiment showing the proposed fix is unphysical — not with prose."
+        )
+
+    if report.issues:
+        lines.append("")
+        lines.append("ISSUES")
+        for n, iss in enumerate(report.issues, 1):
+            lines.append(
+                f"  [{n}] {iss.severity.upper()} / {iss.category} "
+                f"(confidence={iss.confidence}, evidence={iss.evidence_type}, "
+                f"requires_code_change={iss.requires_code_change})"
+            )
+            lines.append(f"      claim: {iss.claim}")
+            lines.append(f"      evidence: {iss.evidence}")
+            if iss.proposed_fix:
+                fix = iss.proposed_fix.replace("\n", "\n               ")
+                lines.append(f"      proposed_fix: {fix}")
+    elif report.verdict == "accept":
+        lines.append("")
+        lines.append("✅ PASS — no issues found")
+
+    return "\n".join(lines)
+
+
+def _run_structured_review(reviewer_id: str, model_name: str,
+                           task: str, background: str, code: str,
+                           stdout: str, figure_path: Optional[str]) -> str:
+    """Common path for reviewer_1 / reviewer_2: structured Pydantic output
+    with text-fallback if the model rejects with_structured_output()."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from src.models.review_schema import ReviewReport
+
+    reviewer_llm = create_reviewer_llm(model_name)
+    system_msg = SystemMessage(content=_REVIEWER_SYSTEM_PROMPT)
+    content_parts = _build_reviewer_content(
+        task, background, code, stdout=stdout,
+        figure_path=figure_path, model_name=model_name,
+    )
+    human_msg = HumanMessage(content=content_parts)
+
+    # First try structured output
+    try:
+        structured = reviewer_llm.with_structured_output(ReviewReport)
+        report = structured.invoke([system_msg, human_msg])
+        return _format_review_report(report, reviewer_id, model_name)
+    except Exception as struct_err:
+        # Fall back to free-form text — keep the run going rather than dropping
+        # the reviewer entirely (we did that with Claude before; never again).
+        try:
+            response = reviewer_llm.invoke([system_msg, human_msg])
+            review_text = response.content if isinstance(response.content, str) else str(response.content)
+            return (
+                f"[{reviewer_id} -- {model_name}] (free-form fallback; "
+                f"structured output failed: {str(struct_err)[:160]})\n\n"
+                + review_text
+            )
+        except Exception as e:
+            return f"[{reviewer_id} -- ERROR] {str(e)}"
+
+
 @tool(args_schema=ReviewerArgs)
-def reviewer_1(task: str, background: str, code: str, stdout: str = "", figure_path: Optional[str] = None) -> str:
+def reviewer_1(
+    task: str,
+    background: str,
+    code: str,
+    state: Annotated[dict, InjectedState],
+    stdout: str = "",
+    figure_path: Optional[str] = None,
+) -> str:
     """Reviewer #1 — independent peer-review by a DIFFERENT LLM model.
     Call AFTER you have a FINAL analysis with code and figure. Pass ONLY:
       - task: the original user question/task
@@ -794,26 +1223,28 @@ def reviewer_1(task: str, background: str, code: str, stdout: str = "", figure_p
       - figure_path: path to the final figure (optional)
 
     DO NOT pass the full chat history. The reviewer sees only the submission package.
-    After receiving feedback from BOTH reviewers, synthesize their suggestions into an improved final version.
+    Returns a STRUCTURED verdict. If any issue has requires_code_change=True at
+    critical/major severity, you MUST run python_repl again with the fix BEFORE
+    issuing your final answer.
     """
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    model_name = Config.reviewer_model_1
-    reviewer_llm = create_reviewer_llm(model_name)
-    system_msg = SystemMessage(content=_REVIEWER_SYSTEM_PROMPT)
-    content_parts = _build_reviewer_content(task, background, code, stdout=stdout, figure_path=figure_path, model_name=model_name)
-    human_msg = HumanMessage(content=content_parts)
-
-    try:
-        response = reviewer_llm.invoke([system_msg, human_msg])
-        review_text = response.content if isinstance(response.content, str) else str(response.content)
-        return f"[Reviewer #1 -- {model_name}]\n\n{review_text}"
-    except Exception as e:
-        return f"[Reviewer #1 -- ERROR] {str(e)}"
+    _budget = _TOOL_CALL_BUDGETS.get("reviewer_1")
+    if _budget and _count_tool_calls(state, "reviewer_1") >= _budget:
+        return _budget_exceeded_text("reviewer_1", _budget)
+    return _run_structured_review(
+        "Reviewer #1", Config.reviewer_model_1,
+        task, background, code, stdout, figure_path,
+    )
 
 
 @tool(args_schema=ReviewerArgs)
-def reviewer_2(task: str, background: str, code: str, stdout: str = "", figure_path: Optional[str] = None) -> str:
+def reviewer_2(
+    task: str,
+    background: str,
+    code: str,
+    state: Annotated[dict, InjectedState],
+    stdout: str = "",
+    figure_path: Optional[str] = None,
+) -> str:
     """Reviewer #2 — independent peer-review by a DIFFERENT LLM model.
     Call AFTER you have a FINAL analysis with code and figure. Pass ONLY:
       - task: the original user question/task
@@ -823,22 +1254,239 @@ def reviewer_2(task: str, background: str, code: str, stdout: str = "", figure_p
       - figure_path: path to the final figure (optional)
 
     DO NOT pass the full chat history. The reviewer sees only the submission package.
-    After receiving feedback from BOTH reviewers, synthesize their suggestions into an improved final version.
+    Returns a STRUCTURED verdict (see reviewer_1).
     """
-    from langchain_core.messages import HumanMessage, SystemMessage
+    _budget = _TOOL_CALL_BUDGETS.get("reviewer_2")
+    if _budget and _count_tool_calls(state, "reviewer_2") >= _budget:
+        return _budget_exceeded_text("reviewer_2", _budget)
+    return _run_structured_review(
+        "Reviewer #2", Config.reviewer_model_2,
+        task, background, code, stdout, figure_path,
+    )
 
-    model_name = Config.reviewer_model_2
-    reviewer_llm = create_reviewer_llm(model_name)
-    system_msg = SystemMessage(content=_REVIEWER_SYSTEM_PROMPT)
-    content_parts = _build_reviewer_content(task, background, code, stdout=stdout, figure_path=figure_path, model_name=model_name)
-    human_msg = HumanMessage(content=content_parts)
 
-    try:
-        response = reviewer_llm.invoke([system_msg, human_msg])
-        review_text = response.content if isinstance(response.content, str) else str(response.content)
-        return f"[Reviewer #2 -- {model_name}]\n\n{review_text}"
-    except Exception as e:
-        return f"[Reviewer #2 -- ERROR] {str(e)}"
+# ─── Scratchpad Compression (pre_model_hook) ─────────────────────────
+# Reduces token usage by ~70% by compressing old tool results.
+# Strategy: keep last N tool results verbatim, replace older ones with
+# 1-line rule-based summaries. Non-destructive — full state stays intact,
+# only llm_input_messages is trimmed.
+
+# Load compression settings from config.yaml (with safe defaults)
+_compression_config = _CONFIG_DATA.get("compression", {})
+_KEEP_RECENT_TOOL_RESULTS = _compression_config.get("keep_recent_tool_results", 6)
+_MIN_KEEP_TOOL_RESULTS = _compression_config.get("min_keep_tool_results", 3)
+_MAX_STDOUT_CHARS = _compression_config.get("max_stdout_chars", 500)
+_MAX_REVIEW_CHARS = _compression_config.get("max_review_chars", 300)
+_COMPRESSION_ENABLED = _compression_config.get("enabled", True)
+_TRIGGER_RATIO = float(_compression_config.get("trigger_ratio", 0.65))
+_HARD_RATIO = float(_compression_config.get("hard_ratio", 0.85))
+_MODEL_TOKEN_CAPS = _compression_config.get("model_token_caps", {}) or {}
+
+
+def _resolve_compression_thresholds(model_name: str, ctx_limit: int):
+    """Compute (soft, hard) compression thresholds for the active model.
+    A per-model cap from config.yaml overrides ratio*ctx on huge-context models
+    (e.g., Gemini 1M) so we don't carry 500k+ of stale tool stdout into every
+    turn just because the context window is enormous."""
+    cap = _MODEL_TOKEN_CAPS.get(model_name)
+    if cap is None:
+        for key, val in _MODEL_TOKEN_CAPS.items():
+            if model_name.startswith(key):
+                cap = val
+                break
+    soft = int(ctx_limit * _TRIGGER_RATIO)
+    hard = int(ctx_limit * _HARD_RATIO)
+    if cap:
+        soft = min(soft, int(cap))
+        hard = min(hard, int(cap * _HARD_RATIO / _TRIGGER_RATIO))
+    return soft, hard
+
+
+def _summarize_tool_result(msg) -> str:
+    """Deterministic compression of a tool result message.
+    No LLM call — pure rule-based extraction of key facts."""
+    name = getattr(msg, 'name', '')
+    content = msg.content if isinstance(msg.content, str) else str(msg.content)
+
+    if name == 'cmip6_literature_search':
+        # Extract just paper count and query — drop all chunk text
+        try:
+            data = json.loads(content)
+            n = len(data.get('results', []))
+            q = data.get('query', '?')
+            titles = [r.get('title', '')[:60] for r in data.get('results', [])[:3]]
+            return f"[COMPRESSED] Literature search: '{q}' → {n} papers. Top: {'; '.join(titles)}"
+        except Exception:
+            return f"[COMPRESSED] Literature search result ({len(content)} chars)"
+
+    elif name == 'python_repl':
+        # Keep stdout (important for continuity), drop verbose parts
+        try:
+            data = json.loads(content)
+            stdout = data.get('stdout', '')[:_MAX_STDOUT_CHARS]
+            figs = data.get('figure_paths', [])
+            err = data.get('error', '')
+            parts = []
+            if stdout:
+                parts.append(f"stdout: {stdout}")
+            if figs:
+                parts.append(f"figures: {figs}")
+            if err:
+                parts.append(f"error: {err[:200]}")
+            return f"[COMPRESSED] Python REPL: {' | '.join(parts)}"
+        except Exception:
+            return f"[COMPRESSED] Python REPL result ({len(content)} chars)"
+
+    elif name in ('cmip6_datasets_search', 'cmip6_datasets_access'):
+        # Keep resolved facets, drop verbose ESGF details
+        try:
+            data = json.loads(content)
+            if isinstance(data, list):
+                summaries = []
+                for item in data[:5]:
+                    facets = item.get('resolved_facets', item.get('search', {}))
+                    summaries.append(str(facets))
+                return f"[COMPRESSED] Dataset search: {len(data)} results. {'; '.join(summaries)}"
+            return f"[COMPRESSED] Dataset result ({len(content)} chars)"
+        except Exception:
+            return f"[COMPRESSED] Dataset result ({len(content)} chars)"
+
+    elif name in ('reviewer_1', 'reviewer_2'):
+        # Keep first N chars of review (verdict + key issues)
+        return f"[COMPRESSED] {name}: {content[:_MAX_REVIEW_CHARS]}"
+
+    elif name == 'review_figure':
+        # Keep the text part, drop image base64
+        if isinstance(content, str):
+            return f"[COMPRESSED] Figure review: {content[:400]}"
+        return f"[COMPRESSED] Figure review result"
+
+    elif name == 'cmip6_citation_graph':
+        # Keep just the summary line
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict):
+                n = data.get('total', data.get('count', '?'))
+                return f"[COMPRESSED] Citation graph: {n} results"
+        except Exception:
+            pass
+        return f"[COMPRESSED] Citation graph ({len(content)} chars)"
+
+    elif name == 'cmip6_methodology_check':
+        # Keep first 300 chars of methodology check
+        return f"[COMPRESSED] Methodology check: {content[:300]}"
+
+    else:
+        # Generic: keep first 200 chars
+        return f"[COMPRESSED] {name}: {content[:200]}"
+
+
+def _msg_chars(msg) -> int:
+    """Approximate character length of a message's content (for token estimates)."""
+    c = getattr(msg, 'content', '')
+    if isinstance(c, str):
+        return len(c)
+    if isinstance(c, list):
+        return sum(len(p.get("text", "")) if isinstance(p, dict) else len(str(p)) for p in c)
+    return len(str(c))
+
+
+def _estimate_input_tokens(messages, last_input_tokens: int) -> int:
+    """Estimate the input-token count for the upcoming LLM call.
+
+    Strategy:
+    - If we have a provider-reported `last_input_tokens` from the previous
+      call, use it as a baseline and add only the chars added since the
+      last AI message (≈ new tool results + new human turn). This is the
+      cheapest accurate estimate possible.
+    - Otherwise (cold start), fall back to len//4 over all messages.
+    """
+    if last_input_tokens > 0:
+        new_chars = 0
+        for m in reversed(messages):
+            if getattr(m, 'type', None) == 'ai':
+                break
+            new_chars += _msg_chars(m)
+        return last_input_tokens + new_chars // 4
+    return sum(_msg_chars(m) for m in messages) // 4
+
+
+def compress_scratchpad(state: dict, config: Optional[RunnableConfig] = None) -> dict:
+    """Pre-model hook: dynamic context compression + blackboard injection.
+
+    Runs before every LLM call. Returns `llm_input_messages` (read-only
+    view) so the actual checkpointed `messages` are never mutated.
+
+    Compression policy:
+      • Estimate next-call input tokens via `last_input_tokens` (from
+        token_tracker) + delta of new content since the last AI message.
+      • If estimate < trigger_ratio * model_context_limit → no compression.
+      • Else compress oldest tool results one-by-one until we drop below
+        the trigger band, never compressing the last `min_keep_tool_results`.
+
+    Blackboard:
+      • Always rendered (if any entries) and appended as the FINAL
+        SystemMessage. Tail position is cache-friendly: prefix tokens
+        before the blackboard stay cacheable across turns even when the
+        blackboard contents change.
+    """
+    messages = list(state["messages"])
+    blackboard = state.get("blackboard") or {}
+
+    # Resolve session_id for token telemetry
+    session_id = "default"
+    if config and isinstance(config, dict):
+        session_id = config.get("configurable", {}).get("session_id", "default")
+    last_in = get_last_input_tokens(session_id)
+
+    # Token budget for this call
+    model_name = Config.get_model_name()
+    ctx_limit = Config.get_model_context_limit(model_name)
+    soft, hard = _resolve_compression_thresholds(model_name, ctx_limit)
+    estimated = _estimate_input_tokens(messages, last_in)
+
+    # Compression decision
+    needs_compression = _COMPRESSION_ENABLED and estimated >= soft
+    if needs_compression:
+        tool_idxs = [i for i, m in enumerate(messages)
+                     if getattr(m, 'type', None) == "tool"]
+        # Always protect at least min_keep_tool_results most-recent tool msgs
+        protected = set(tool_idxs[-_MIN_KEEP_TOOL_RESULTS:]) if tool_idxs else set()
+        candidates = [i for i in tool_idxs if i not in protected]
+
+        compressed_count = 0
+        bytes_saved = 0
+        for idx in candidates:  # oldest-first
+            if estimated < soft:
+                break
+            original = messages[idx]
+            before_chars = _msg_chars(original)
+            summary = _summarize_tool_result(original)
+            messages[idx] = ToolMessage(
+                content=summary,
+                tool_call_id=getattr(original, 'tool_call_id', '') or '',
+                name=getattr(original, 'name', 'tool'),
+            )
+            after_chars = len(summary)
+            delta_tokens = (before_chars - after_chars) // 4
+            bytes_saved += before_chars - after_chars
+            estimated = max(0, estimated - delta_tokens)
+            compressed_count += 1
+
+        if compressed_count:
+            print(
+                f"[compress] {model_name} | est {estimated:,}/{ctx_limit:,} tok "
+                f"(soft={soft:,}, hard={hard:,}) | compressed {compressed_count} "
+                f"old tool result(s), saved ~{bytes_saved // 4:,} tok"
+            )
+
+    # Blackboard injection — always at the tail, never first (cache-friendly)
+    if _BB_ENABLED and blackboard:
+        bb_text = _bb_format(blackboard)
+        if bb_text:
+            messages = messages + [SystemMessage(content=bb_text)]
+
+    return {"llm_input_messages": messages}
 
 
 # ─── Agent Factory ───────────────────────────────────────────────────
@@ -855,6 +1503,7 @@ def create_cmip6_agent():
         cmip6_methodology_check,
         python_repl, review_figure, analysis_guide_tool,
         era5_monthly_tool,
+        save_to_memory, forget,
         reviewer_1, reviewer_2,
     ]
 
@@ -864,6 +1513,8 @@ def create_cmip6_agent():
         model=llm,
         tools=all_tools,
         prompt=system_message,
+        pre_model_hook=compress_scratchpad,
+        state_schema=CMIP6AgentState,
     )
 
     return agent

@@ -47,6 +47,11 @@ app.add_middleware(
 
 _agents: Dict[str, Any] = {}
 
+# Cancel flags per session — set by /api/sessions/{sid}/cancel, checked in
+# the event_generator between agent steps. Cancellation can only happen at
+# step boundaries (i.e., between tool calls / LLM calls), not mid-tool.
+_cancel_flags: Dict[str, bool] = {}
+
 
 def _get_agent(model_name: str = None):
     model_name = model_name or Config.get_model_name()
@@ -76,6 +81,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str = Field(default="default")
     model_name: str = Field(default=None)
+    google_api_key_slot: int = Field(default=1, ge=1, le=2)
     rag_chunks: int = Field(default=10, ge=3, le=25)
     rag_searches: int = Field(default=5, ge=1, le=12)
     reviewer_model_1: str = Field(default="gemini-3.1-pro-preview")
@@ -91,6 +97,34 @@ class ConfigResponse(BaseModel):
     models: List[str]
     current_model: str
     reviewer_models: List[str]
+    google_api_key_slots: List[str]
+
+
+# ─── Google API Key Slot Switching ───────────────────────────────────
+
+_current_key_slot = 1
+
+def _apply_google_api_key_slot(slot: int):
+    """Switch GOOGLE_API_KEY env var to the requested slot (1 or 2).
+    Also clears cached embedding/LLM singletons so they pick up the new key.
+    No-op when GOOGLE_API_KEY_* slots are unset (Vertex-only deployments)."""
+    global _current_key_slot
+    key = os.environ.get(f"GOOGLE_API_KEY_{slot}", "")
+    if not key:
+        # Vertex-only deployments have no AI-Studio slots configured.
+        # Stay silent — `vertex_api_key` covers all Gemini routing.
+        return
+    if slot != _current_key_slot:
+        os.environ["GOOGLE_API_KEY"] = key
+        _current_key_slot = slot
+        # Reset cached singletons that hold the old key
+        from src.services.llm_service import _reset_embedding_cache
+        from src.utils.vector_search import clear_retriever_cache
+        _reset_embedding_cache()
+        clear_retriever_cache()
+        # Clear agent cache so LLM is recreated with new key
+        _agents.clear()
+        logger.info(f"Switched to GOOGLE_API_KEY_{slot}")
 
 
 # ─── Routes ──────────────────────────────────────────────────────────
@@ -101,6 +135,7 @@ async def get_config():
         models=Config.get_available_models(),
         current_model=Config.get_model_name(),
         reviewer_models=Config.REVIEWER_MODELS,
+        google_api_key_slots=["Key 1 (primary)", "Key 2 (backup)"],
     )
 
 
@@ -120,6 +155,19 @@ async def clear_session(req: SessionResponse):
 async def get_messages(session_id: str):
     msgs = session_manager.get_messages(session_id)
     return {"messages": msgs}
+
+
+@app.post("/api/sessions/{session_id}/cancel")
+async def cancel_session(session_id: str):
+    """Signal the streaming generator to stop at its next step boundary.
+
+    Cancellation is cooperative: the running agent.stream() loop checks the
+    flag between events. A long-running tool call (download, REPL exec) will
+    finish before the cancel takes effect.
+    """
+    _cancel_flags[session_id] = True
+    logger.info(f"[cancel] flag set for session {session_id}")
+    return {"status": "cancel_requested", "session_id": session_id}
 
 
 def _extract_text_from_event(event: dict) -> str:
@@ -159,6 +207,9 @@ async def chat(req: ChatRequest):
     session = session_manager.get_session(req.session_id)
     session.messages.append({"role": "user", "content": req.message})
 
+    # Apply Google API key slot
+    _apply_google_api_key_slot(req.google_api_key_slot)
+
     agent = _get_agent(req.model_name)
     # Apply per-request RAG settings
     Config.rag_chunks_per_search = req.rag_chunks
@@ -188,7 +239,7 @@ async def chat(req: ChatRequest):
 
         result = agent.invoke(
             {"messages": history},
-            config={"configurable": {"session_id": req.session_id}, "recursion_limit": 200},
+            config={"configurable": {"session_id": req.session_id}, "recursion_limit": 80},
         )
 
         final_messages = result.get("messages", [])
@@ -281,7 +332,11 @@ async def chat_stream(req: ChatRequest):
     """Process a chat message and stream via SSE using langgraph's stream."""
     session = session_manager.get_session(req.session_id)
     session.messages.append({"role": "user", "content": req.message})
-    print(f"[stream] model_name from request: '{req.model_name}'")
+    print(f"[stream] model_name from request: '{req.model_name}', key_slot: {req.google_api_key_slot}")
+
+    # Apply Google API key slot
+    _apply_google_api_key_slot(req.google_api_key_slot)
+
     agent = _get_agent(req.model_name)
     # Apply per-request RAG settings
     Config.rag_chunks_per_search = req.rag_chunks
@@ -298,6 +353,8 @@ async def chat_stream(req: ChatRequest):
         model_used = req.model_name or Config.get_model_name()
         tracker.start_request(req.session_id, model_used, req.message)
         slog = AgentStepLogger(req.session_id, model_used, req.message, req.rag_searches, req.rag_chunks)
+        # Reset cancel flag for this session at the start of a new request
+        _cancel_flags[req.session_id] = False
         try:
             from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
@@ -320,16 +377,29 @@ async def chat_stream(req: ChatRequest):
 
             yield f"data: {json.dumps({'type': 'status', 'content': 'Thinking...'})}\n\n"
 
-            MAX_RETRIES = 2
+            # User explicitly opted into "wait as long as needed" — generous
+            # retry budget for transient cloud errors (Vertex 429, GCS hiccups).
+            # Bumped 2026-05-15 after preview-model quota volatility — agent
+            # retries up to 30× with 30s–180s waits so even a multi-minute
+            # Vertex cool-down period gets ridden out instead of failing.
+            MAX_RETRIES = 30
             for attempt in range(MAX_RETRIES + 1):
                 full_response = ""
                 figure_paths_attempt = []
+                cancelled = False
                 try:
                     for event in agent.stream(
                         {"messages": history},
                         stream_mode="updates",
-                        config={"configurable": {"session_id": req.session_id}, "recursion_limit": 200},
+                        config={"configurable": {"session_id": req.session_id}, "recursion_limit": 80},
                     ):
+                        # Cooperative cancel check between agent steps
+                        if _cancel_flags.get(req.session_id):
+                            logger.info(f"[cancel] honoring cancel for session {req.session_id}")
+                            yield f"data: {json.dumps({'type': 'status', 'content': '🛑 Stopped by user'})}\n\n"
+                            full_response = full_response or "🛑 Run stopped by user."
+                            cancelled = True
+                            break
                         for node_name, node_output in event.items():
                             messages = node_output.get("messages", [])
                             for msg in messages:
@@ -419,9 +489,12 @@ async def chat_stream(req: ChatRequest):
                     print(f"[STREAM ERROR] {full_tb}")
                     if attempt < MAX_RETRIES:
                         import time
-                        wait = 3 * (attempt + 1)
-                        logger.warning(f"[agent] 🔄 Retrying in {wait}s after: {err_str[:100]}")
-                        yield f"data: {json.dumps({'type': 'status', 'content': f'⚡ Connection lost, retrying in {wait}s...'})}\n\n"
+                        # Exponential backoff capped at 180s (3 min) — gives
+                        # Vertex sliding-window quotas time to fully reset on
+                        # preview models that hard-cap below 5 RPM.
+                        wait = min(30 * (1.5 ** attempt), 180)
+                        logger.warning(f"[agent] 🔄 Retrying ({attempt+1}/{MAX_RETRIES}) in {wait:.0f}s after: {err_str[:100]}")
+                        yield f"data: {json.dumps({'type': 'status', 'content': f'⚡ Transient error (attempt {attempt+1}/{MAX_RETRIES}), retrying in {wait:.0f}s...'})}\n\n"
                         time.sleep(wait)
                         continue
                     else:
@@ -429,6 +502,9 @@ async def chat_stream(req: ChatRequest):
                         yield f"data: {json.dumps({'type': 'text', 'content': full_response})}\n\n"
                         break
 
+                if cancelled:
+                    figure_paths = figure_paths_attempt
+                    break
                 if full_response:
                     figure_paths = figure_paths_attempt
                     break
@@ -485,12 +561,17 @@ async def get_usage():
 
 @app.get("/api/figures/{filename}")
 async def get_figure(filename: str):
-    """Serve a figure file from any session subdirectory."""
-    base = os.path.join(os.getcwd(), "temp_figures")
-    # Search in all session subdirectories
-    for root, dirs, files in os.walk(base):
-        if filename in files:
-            return FileResponse(os.path.join(root, filename), media_type="image/png")
+    """Serve a figure file from temp_figures or any session results directory."""
+    search_dirs = [
+        os.path.join(os.getcwd(), "temp_figures"),
+        os.path.join(os.getcwd(), "results"),
+    ]
+    for search_dir in search_dirs:
+        if not os.path.isdir(search_dir):
+            continue
+        for root, dirs, files in os.walk(search_dir):
+            if filename in files:
+                return FileResponse(os.path.join(root, filename), media_type="image/png")
     raise HTTPException(status_code=404, detail="Figure not found")
 
 

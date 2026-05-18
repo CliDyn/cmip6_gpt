@@ -221,9 +221,129 @@ body {
   color: #fff;
 }
 
+.sidebar-button.export-btn {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #10b981;
+}
+
+.sidebar-button.export-btn:hover {
+  background: #10b981;
+  border-color: #10b981;
+  color: #fff;
+}
+
 .sidebar-select option {
   background: var(--bg-secondary);
   color: var(--text-primary);
+}
+
+/* ─── RAG Depth Sliders ─────────────────────────── */
+
+.slider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.slider-row {
+  display: grid;
+  grid-template-columns: 52px 1fr 28px;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+}
+
+.slider-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.sidebar-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--border) 0%);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.sidebar-slider:hover {
+  opacity: 0.9;
+}
+
+.sidebar-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 3px;
+  background: var(--border);
+}
+
+.sidebar-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  margin-top: -4.5px;
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.4);
+  cursor: pointer;
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+
+.sidebar-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.6);
+}
+
+.sidebar-slider::-moz-range-track {
+  height: 3px;
+  border-radius: 3px;
+  background: var(--border);
+  border: none;
+}
+
+.sidebar-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.4);
+  cursor: pointer;
+}
+
+.slider-value {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  text-align: center;
+  font-family: var(--font-mono);
+  background: var(--accent-glow);
+  border-radius: 4px;
+  padding: 1px 0;
+  line-height: 1.4;
+}
+
+.slider-total {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  padding-top: 4px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
 }
 
 /* ─── Chat Main ──────────────────────────────────── */
@@ -879,6 +999,14 @@ body {
   cursor: not-allowed;
 }
 
+.send-button.stop-button {
+  background: #dc2626;
+}
+
+.send-button.stop-button:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
 /* ─── Streaming indicator ────────────────────────── */
 
 .streaming-cursor::after {
@@ -1195,4 +1323,83 @@ body {
 [data-theme="light"] .source-text {
   color: #475569;
   border-left-color: rgba(0, 0, 0, 0.08);
+}
+
+/* ─── Reviewer Toggle & Section ──────────────────── */
+
+.reviewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--border);
+  border-radius: 20px;
+  transition: background 0.3s;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 3px;
+  bottom: 3px;
+  background: var(--text-secondary);
+  border-radius: 50%;
+  transition: transform 0.3s, background 0.3s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--accent);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+  background: #fff;
+}
+
+.reviewer-selects {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.reviewer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reviewer-row .slider-label {
+  min-width: 60px;
+  font-size: 10px;
+}
+
+.reviewer-select {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 11px;
+  background-position: right 8px center;
 }

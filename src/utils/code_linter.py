@@ -10,7 +10,22 @@ CMIP6 Forge hallucination audit.
 """
 
 import ast
+import re
 from typing import List, Dict
+
+
+# Variable name patterns that suggest "this should be real model data".
+# Used by the AST-level fabrication detector below.
+_MODEL_VAR_RE = re.compile(
+    r"^("
+    r"(awi|mpi|cesm|gfdl|ec[_-]?earth|hadgem|noresm|miroc|ipsl|access|canesm|ukesm|fgoals|cnrm|inm)"
+    r"[_a-z0-9]*"
+    r"|model_?(data|out|field|output|sst|tas|pr|tos|zos|psl|uo|vo)\w*"
+    r"|cmip6?_?\w*"
+    r"|(historical|ssp\d{3}|projection)_?(data|fld|out)\w*"
+    r")$",
+    re.IGNORECASE,
+)
 
 
 class ClimateCodeLinter(ast.NodeVisitor):
@@ -18,6 +33,67 @@ class ClimateCodeLinter(ast.NodeVisitor):
 
     def __init__(self):
         self.issues: List[Dict] = []
+
+    # ─── Synthetic data fabrication (AST-level structural detection) ───
+
+    def _flag_random_model_assignment(self, target_name: str, location: str = "") -> None:
+        self.issues.append({
+            "severity": "critical",
+            "issue": (
+                f"DATA FABRICATION: variable '{target_name}' looks like a CMIP6/model "
+                f"field but is being populated from np.random / synthetic source"
+                f"{(' (' + location + ')') if location else ''}. "
+                "FORBIDDEN: agents must NEVER fabricate model output when real fetch fails. "
+                "Stop, report the failure, and surface the load error to the user."
+            ),
+        })
+
+    def _is_random_call(self, value: ast.AST) -> bool:
+        """Detect np.random.*, numpy.random.*, random.*, torch.randn-style calls."""
+        if isinstance(value, ast.Call):
+            f = value.func
+            # np.random.normal(...), np.random.uniform(...)
+            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Attribute):
+                if f.value.attr == "random":
+                    return True
+            # np.random.<x> directly (when imported as `from numpy import random`)
+            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+                if f.value.id in ("random",) and f.attr in (
+                    "normal", "uniform", "randn", "rand", "standard_normal",
+                    "choice", "randint",
+                ):
+                    return True
+            # np.random.default_rng().normal(...)
+            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Call):
+                inner = f.value.func
+                if (isinstance(inner, ast.Attribute)
+                        and inner.attr in ("default_rng", "RandomState")):
+                    return True
+        return False
+
+    def visit_Assign(self, node):
+        """Catch `awi_tos = np.random.normal(...)` and friends."""
+        if self._is_random_call(node.value):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and _MODEL_VAR_RE.match(tgt.id):
+                    self._flag_random_model_assignment(tgt.id, location="np.random call")
+                elif isinstance(tgt, ast.Tuple):
+                    for elt in tgt.elts:
+                        if isinstance(elt, ast.Name) and _MODEL_VAR_RE.match(elt.id):
+                            self._flag_random_model_assignment(elt.id, location="np.random tuple")
+        # xr.DataArray(np.random.normal(...), ...) bound to a model-named var
+        if isinstance(node.value, ast.Call):
+            f = node.value.func
+            is_xr_dataarray = (
+                isinstance(f, ast.Attribute) and f.attr in ("DataArray", "Dataset")
+            ) or (isinstance(f, ast.Name) and f.id in ("DataArray", "Dataset"))
+            if is_xr_dataarray and node.value.args:
+                first = node.value.args[0]
+                if self._is_random_call(first):
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Name) and _MODEL_VAR_RE.match(tgt.id):
+                            self._flag_random_model_assignment(tgt.id, location="xr.DataArray(np.random...)")
+        self.generic_visit(node)
 
     def visit_Call(self, node):
         # --- Ban image-space gradient operators on geophysical data ---
@@ -109,7 +185,7 @@ class ClimateCodeLinter(ast.NodeVisitor):
 def lint_climate_code(code_str: str) -> List[Dict]:
     """
     Parse and lint a code string for common climate analysis errors.
-    
+
     Returns a list of dicts with 'severity' and 'issue' keys.
     Severity levels: 'critical', 'warning', 'info'
     """
