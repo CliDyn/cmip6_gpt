@@ -34,6 +34,10 @@ PRICING = {
     # Gemini 3 Flash
     "gemini-3-flash": {"input": 0.10, "output": 0.40},
     "gemini-3-flash-preview": {"input": 0.10, "output": 0.40},
+    # Gemini 3.5 Flash — approx flash-tier EUR; update when the official
+    # Vertex SKU is confirmed. The "-vertex" variant prefix-matches this
+    # base key in _get_pricing().
+    "gemini-3.5-flash": {"input": 0.30, "output": 2.50},
     "gemini-3.1-flash-lite-preview": {"input": 0.02, "output": 0.08},
     # Gemini 2.5
     "gemini-2.5-pro": {"input": 1.25, "output": 10.00},

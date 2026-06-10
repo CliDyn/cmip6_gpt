@@ -39,6 +39,8 @@ llm:
   available_models:
     - "gemini-3.1-pro-preview-vertex"
     - "gemini-3.1-pro-preview"
+    - "gemini-3.5-flash-vertex"
+    - "gemini-3.5-flash"
     - "gpt-5.5"
     - "gpt-5.2"
   # Temperature for deterministic tool calls (facet selection, value selection)
@@ -87,6 +89,8 @@ compression:
     gemini-3-pro:                  200000
     gemini-3.0-pro:                200000
     gemini-3-flash-preview:        200000
+    gemini-3.5-flash-vertex: 200000
+    gemini-3.5-flash:        200000
 
 # Per-model context window sizes (input tokens). Used by the dynamic
 # compression trigger to know how much head-room exists.
@@ -96,6 +100,8 @@ model_context_limits:
   gemini-3-pro: 1048576
   gemini-3.0-pro: 1048576
   gemini-3-flash-preview: 1048576
+  gemini-3.5-flash-vertex: 1048576
+  gemini-3.5-flash: 1048576
   gemini-2.5-pro: 1048576
   gemini-2.5-flash: 1048576
   gpt-5.5: 272000

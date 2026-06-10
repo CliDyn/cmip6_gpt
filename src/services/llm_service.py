@@ -15,14 +15,16 @@ from src.config import Config
 # back-to-back), we throttle ALL Vertex chat calls through a single
 # token-bucket limiter shared between the main agent and reviewers.
 #
-# 0.083 req/s = 5 RPM steady-state, with a small burst budget so short
-# tool-clusters (≤3 back-to-back calls) fire without pause; the bucket
-# then refills slowly and inserts waits when the average over ~60s
-# exceeds the cap.
+# 2026-06-06: measured the real ceiling on this BILLED project — 10/10 calls
+# OK at ~18 RPM with zero 429s. The earlier "5 RPM cap" was a transient
+# saturation amplified by langchain's max_retries=15 storm (and an old/wrong
+# key). So pace at a healthy 12 RPM with real headroom under ~18, and keep
+# max_retries low (see ChatVertexAI below) so a rare 429 can't self-amplify.
+# A small burst budget lets a tool-cluster fire without per-call stalls.
 _vertex_rate_limiter = InMemoryRateLimiter(
-    requests_per_second=0.083,  # ≈ 5 RPM steady-state
-    check_every_n_seconds=0.5,
-    max_bucket_size=1,          # no bursting — every call gates through
+    requests_per_second=0.2,    # ≈ 12 RPM steady-state (headroom under measured ~18)
+    check_every_n_seconds=0.25,
+    max_bucket_size=3,          # small burst budget for back-to-back tool calls
 )
 
 
@@ -114,12 +116,16 @@ def create_llm(temperature = 1, model_name = None):
                 project="project-cfac11fe-4e74-4acc-899",
                 location=os.environ.get("GCP_LOCATION", "global"),
                 temperature=temperature,
-                timeout=120,
-                # Bumped 2026-05-15 — preview-model global endpoint hard-caps
-                # below 5 RPM intermittently. Internal exponential backoff
-                # rides out the cool-down so we don't have to restart the
-                # whole agent stream from scratch on every 429.
-                max_retries=15,
+                # 300s ceiling — generous for a slow response, but fails a rare
+                # black-holed call in 5 min instead of 10 so a stall can't park
+                # the stream for half an hour.
+                timeout=300,
+                # 2026-06-05: cut 15 → 3. At 15, a single 429 was retried up to
+                # 15× in a fast burst BYPASSING _vertex_rate_limiter, which kept
+                # the global quota pinned at exhausted and stalled the stream for
+                # ~1h. With ~2 RPM pacing above, new calls rarely 429, so 3
+                # retries are enough and a residual 429 can no longer storm.
+                max_retries=3,
                 rate_limiter=_vertex_rate_limiter,
             )
         else:

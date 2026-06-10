@@ -37,11 +37,11 @@ export default function App() {
     );
     const [reviewerModel1, setReviewerModel1] = useState(() => {
         const v = localStorage.getItem('cmip6-reviewer-model-1') || 'gemini-3.1-pro-preview';
-        return v === 'claude-opus-4-6' ? 'claude-opus-4-7' : v;
+        return (v === 'claude-opus-4-6' || v === 'claude-opus-4-7') ? 'claude-opus-4-8' : v;
     });
     const [reviewerModel2, setReviewerModel2] = useState(() => {
         const v = localStorage.getItem('cmip6-reviewer-model-2') || 'gemini-3.1-pro-preview';
-        return v === 'claude-opus-4-6' ? 'claude-opus-4-7' : v;
+        return (v === 'claude-opus-4-6' || v === 'claude-opus-4-7') ? 'claude-opus-4-8' : v;
     });
     const [reviewersEnabled, setReviewersEnabled] = useState(() =>
         localStorage.getItem('cmip6-reviewers-enabled') !== 'false'
@@ -87,7 +87,7 @@ export default function App() {
 
         }).catch(() => {
             setModels(['gpt-5.2', 'gpt-4o', 'gpt-4.1', 'gpt-4.1-nano', 'gpt-4o-mini']);
-            setReviewerModels(['gemini-3.1-pro-preview', 'claude-opus-4-7', 'gpt-5.5']);
+            setReviewerModels(['gemini-3.1-pro-preview', 'claude-opus-4-8', 'gpt-5.5']);
 
         });
     }, []);

@@ -35,7 +35,7 @@ class Config:
     reviewer_model_1: str = "gemini-3.1-pro-preview"
     reviewer_model_2: str = "gemini-3.1-pro-preview"
     reviewers_enabled: bool = True
-    REVIEWER_MODELS = ["gemini-3.1-pro-preview", "claude-opus-4-7", "gpt-5.5"]
+    REVIEWER_MODELS = ["gemini-3.1-pro-preview", "claude-opus-4-8", "gpt-5.5"]
 
     @classmethod
     def set_model_name(cls, model_name: str):

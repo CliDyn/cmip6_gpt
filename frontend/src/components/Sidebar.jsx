@@ -1,7 +1,7 @@
 export default function Sidebar({ models, currentModel, onModelChange, onClearChat, onExportChat, ragChunks, ragSearches, onRagChunksChange, onRagSearchesChange, reviewerModels, reviewerModel1, reviewerModel2, onReviewerModel1Change, onReviewerModel2Change, reviewersEnabled, onReviewersEnabledChange }) {
     const reviewerDisplayNames = {
         'gemini-3.1-pro-preview': 'Gemini 3.1 Pro',
-        'claude-opus-4-7': 'Claude Opus 4.7',
+        'claude-opus-4-8': 'Claude Opus 4.8',
         'gpt-5.5': 'GPT 5.5',
     };
     return (
